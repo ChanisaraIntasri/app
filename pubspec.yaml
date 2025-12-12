@@ -1,0 +1,42 @@
+name: flutter_application_1
+description: "A new Flutter project."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # UI Icons
+  cupertino_icons: ^1.0.8
+  icons_plus: ^4.0.0
+
+  # Navigation
+  persistent_bottom_nav_bar: ^6.2.1
+
+  # Camera
+  camera: ^0.10.5+9
+
+  # Network / API
+  http: ^1.2.2
+  http_parser: ^4.0.2
+  shared_preferences: ^2.5.3   # ถ้า pub get ฟ้องว่า SDK เวอร์ชันไม่ถึงให้ลดเวอร์ชันลงได้
+
+  # Calendar
+  table_calendar: ^3.2.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+
+flutter:
+  uses-material-design: true
+
+  # การจัดการรูปภาพ
+  assets:
+    - assets/images/
