@@ -1,120 +1,132 @@
-// lib/pages/mainpage/confirm_capture_page.dart
 import 'dart:io';
 import 'package:flutter/material.dart';
 
-const kOrange = Color(0xFFFF7A00);
+const kPrimaryGreen = Color(0xFF005E33);
 
-class ConfirmCapturePage extends StatefulWidget {
+class ConfirmCapturePage extends StatelessWidget {
   final String imagePath;
-  const ConfirmCapturePage({super.key, required this.imagePath});
 
-  @override
-  State<ConfirmCapturePage> createState() => _ConfirmCapturePageState();
-}
-
-class _ConfirmCapturePageState extends State<ConfirmCapturePage> {
-  bool _busy = false; // กันกดปุ่มซ้ำรัวๆ
-
-  void _retake() {
-    if (_busy) return;
-    Navigator.of(context).pop(false);
-  }
-
-  void _usePhoto() {
-    if (_busy) return;
-    setState(() => _busy = true);
-    // คืนค่า true ให้หน้าเดิม แล้วค่อยปล่อย busy (ไม่จำเป็นต้อง setState อีก)
-    Navigator.of(context).pop(true);
-  }
+  const ConfirmCapturePage({
+    super.key,
+    required this.imagePath,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black,
-        elevation: 0,
-        iconTheme: const IconThemeData(color: Colors.white),
-        title: const Text('ตัวอย่างภาพ', style: TextStyle(color: Colors.white)),
-      ),
       body: Stack(
         children: [
-          // รูปแบบเต็ม จิ้มซูมได้
+          // ✅ รูปเต็มจอ
           Positioned.fill(
-            child: InteractiveViewer(
-              maxScale: 5,
-              child: Image.file(
-                File(widget.imagePath),
-                fit: BoxFit.contain,
-              ),
+            child: Image.file(
+              File(imagePath),
+              fit: BoxFit.cover,
+              alignment: Alignment.center,
             ),
           ),
 
-          // ไล่เฉดมืดล่าง เพื่อให้อ่านปุ่ม/ตัวหนังสือง่าย
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            height: 140,
-            child: IgnorePointer(
-              child: Container(
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [Colors.transparent, Colors.black54, Colors.black87],
+          // ✅ ปุ่มย้อนกลับ (ไม่มีแถบด้านบนแล้ว)
+          SafeArea(
+            child: Align(
+              alignment: Alignment.topLeft,
+              child: Padding(
+                padding: const EdgeInsets.all(10),
+                child: Material(
+                  color: Colors.black.withOpacity(0.35),
+                  borderRadius: BorderRadius.circular(22),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(22),
+                    onTap: () => Navigator.pop(context, false),
+                    child: const Padding(
+                      padding: EdgeInsets.all(10),
+                      child: Icon(
+                        Icons.arrow_back_ios_new_rounded,
+                        color: Colors.white,
+                        size: 20,
+                      ),
+                    ),
                   ),
                 ),
               ),
             ),
           ),
 
-          // ปุ่มล่าง: ถ่ายใหม่ / ใช้รูปนี้
-          Positioned(
-            left: 16,
-            right: 16,
-            bottom: 16,
-            child: SafeArea(
-              top: false,
-              child: Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.white,
-                        side: const BorderSide(color: Colors.white70),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(14),
+          // ✅ เงาด้านล่างให้อ่านปุ่มชัด
+          Positioned.fill(
+            child: IgnorePointer(
+              child: Container(
+                decoration: const BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.transparent,
+                      Colors.transparent,
+                      Color(0xAA000000),
+                      Color(0xE6000000),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // ✅ ปุ่มด้านล่าง
+          SafeArea(
+            child: Align(
+              alignment: Alignment.bottomCenter,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 18),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.white,
+                          side: BorderSide(
+                            color: Colors.white.withOpacity(0.7),
+                            width: 2,
+                          ),
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(18),
+                          ),
+                        ),
+                        child: const Text(
+                          'ถ่ายใหม่',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                       ),
-                      onPressed: _busy ? null : _retake,
-                      child: const Text('ถ่ายใหม่'),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: kOrange,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(14),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: kPrimaryGreen,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 16),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(18),
+                          ),
+                          elevation: 2,
                         ),
-                        elevation: 2,
+                        child: const Text(
+                          'ยืนยันรูปนี้',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
                       ),
-                      onPressed: _busy ? null : _usePhoto,
-                      child: _busy
-                          ? const SizedBox(
-                              height: 22,
-                              width: 22,
-                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                            )
-                          : const Text('ยืนยันรูปนี้'),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
