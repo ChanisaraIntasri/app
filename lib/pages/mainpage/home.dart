@@ -1,370 +1,440 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_application_1/pages/mainpage/day_note_page.dart';
-import 'package:persistent_bottom_nav_bar/persistent_bottom_nav_bar.dart';
 import 'package:table_calendar/table_calendar.dart';
 
+// ✅ model
+import 'package:flutter_application_1/models/citrus_tree_record.dart';
+
 const kPrimaryGreen = Color(0xFF005E33);
-
-// พื้นหลังจอ (ครีมอ่อนมาก ๆ)
 const kPageBg = Color.fromARGB(255, 251, 251, 251);
+const kCalendarCardBg = Colors.white;
 
-// พื้นหลังบล็อกปฏิทิน: ขาว/ครีมที่ "เข้มกว่าพื้นหลังนิดหน่อย"
-const kCalendarBg = Color.fromARGB(255, 248, 246, 244);
+/// key "yyyy-MM-dd"
+String _dateKey(DateTime d) {
+  final y = d.year.toString().padLeft(4, '0');
+  final m = d.month.toString().padLeft(2, '0');
+  final day = d.day.toString().padLeft(2, '0');
+  return '$y-$m-$day';
+}
+
+DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
+
+DateTime _diagnosedAt(CitrusTreeRecord t) =>
+    t.diagnosedAt ?? t.lastScanAt ?? t.createdAt;
+
+/// 1 กลุ่ม = โรคเดียวกัน + severity เท่ากัน
+class _Group {
+  final String key; // disease__severity
+  final String disease;
+  final String severity;
+  final String taskName;
+  final int everyDays;
+  final int totalTimes;
+  final DateTime startDate;
+  final List<CitrusTreeRecord> trees;
+
+  const _Group({
+    required this.key,
+    required this.disease,
+    required this.severity,
+    required this.taskName,
+    required this.everyDays,
+    required this.totalTimes,
+    required this.startDate,
+    required this.trees,
+  });
+}
+
+/// งานใน "วันหนึ่ง"
+class _DueItem {
+  final DateTime date;
+  final _Group group;
+
+  const _DueItem({required this.date, required this.group});
+
+  bool isDoneAllTrees() {
+    final k = _dateKey(date);
+    return group.trees.every((t) => t.treatmentDoneDates.contains(k));
+  }
+}
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  final List<CitrusTreeRecord>? trees;
+  final ValueChanged<List<CitrusTreeRecord>>? onTreesUpdated;
+
+  const HomePage({super.key, this.trees, this.onTreesUpdated});
 
   @override
   State<HomePage> createState() => _HomePageState();
 }
 
 class _HomePageState extends State<HomePage> {
-  // วันที่ถูกเลือก & วันที่โฟกัสในปฏิทิน
   DateTime _selectedDate = DateTime.now();
   DateTime _focusedDay = DateTime.now();
 
-  // เก็บข้อมูลงาน/โน้ตของแต่ละวัน
-  // key = วันที่แบบ year-month-day (ตัดเวลา)
-  final Map<DateTime, List<DayNoteResult>> _dayNotes = {};
+  late List<CitrusTreeRecord> _trees;
+  Map<String, List<_DueItem>> _dueIndex = {};
 
-  // ตัดเวลาออก เหลือแค่ปี-เดือน-วัน
-  DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
+  @override
+  void initState() {
+    super.initState();
 
-  // ให้ TableCalendar ใช้โหลด event ของแต่ละวัน
-  List<DayNoteResult> _getNotesForDay(DateTime day) {
-    return _dayNotes[_dateOnly(day)] ?? const <DayNoteResult>[];
+    // ✅ ลบ DEMO: ใช้ข้อมูลจริงเท่านั้น (ถ้าไม่มีข้อมูล = ว่าง)
+    _trees = List<CitrusTreeRecord>.from(widget.trees ?? const []);
+    _rebuildIndex();
   }
 
-  // เปิดหน้าสร้าง/แก้ไขบันทึก (ซ่อน bottom nav)
-  Future<void> _openDayNote(DateTime date) async {
-    final result = await PersistentNavBarNavigator.pushNewScreen(
-      context,
-      screen: DayNotePage(selectedDate: date),
-      withNavBar: false, // ✅ ซ่อนแถบเมนูล่าง
-      pageTransitionAnimation: PageTransitionAnimation.cupertino,
-    );
+  @override
+  void didUpdateWidget(covariant HomePage oldWidget) {
+    super.didUpdateWidget(oldWidget);
 
-    // ถ้ากดบันทึกจริง และเป็น DayNoteResult
-    if (result is DayNoteResult && result.hasTask) {
-      final key = _dateOnly(result.date);
-      setState(() {
-        final List<DayNoteResult> current =
-            List<DayNoteResult>.from(_dayNotes[key] ?? const <DayNoteResult>[]);
-        current.add(result);
-        _dayNotes[key] = current;
-      });
-    } else {
-      setState(() {}); // refresh เฉย ๆ
+    // ✅ ถ้า parent ส่ง trees ใหม่มา ให้ sync
+    if (widget.trees != oldWidget.trees) {
+      _trees = List<CitrusTreeRecord>.from(widget.trees ?? const []);
+      _rebuildIndex();
     }
   }
 
-  // ----------------------------
-  // แสดงรายละเอียดแบบ "บล็อกสีข้าว" กลางจอ
-  // ----------------------------
-  void _showDayDetailsSheet(DateTime day) {
-    final key = _dateOnly(day);
+  void _rebuildIndex() {
+    final groups = _buildGroups(_trees);
 
-    showDialog(
+    final Map<String, List<_DueItem>> index = {};
+    for (final g in groups) {
+      final occurrences = _generateOccurrences(
+        start: g.startDate,
+        everyDays: g.everyDays,
+        totalTimes: g.totalTimes,
+      );
+
+      for (final d in occurrences) {
+        final k = _dateKey(d);
+        index.putIfAbsent(k, () => []);
+        index[k]!.add(_DueItem(date: d, group: g));
+      }
+    }
+
+    _dueIndex = index;
+    if (mounted) setState(() {});
+  }
+
+  List<_Group> _buildGroups(List<CitrusTreeRecord> trees) {
+    final filtered = trees
+        .where((t) => t.disease.trim().isNotEmpty && t.disease.trim() != '-')
+        .toList();
+
+    final Map<String, List<CitrusTreeRecord>> map = {};
+    for (final t in filtered) {
+      final disease = t.disease.trim().toLowerCase();
+      final severity = (t.severity).trim().toLowerCase();
+      final key = '${disease}__${severity}';
+      map.putIfAbsent(key, () => []);
+      map[key]!.add(t);
+    }
+
+    final List<_Group> out = [];
+    map.forEach((key, list) {
+      final base = list.first;
+
+      final taskName =
+          base.treatmentTaskName.trim().isEmpty ? 'พ่นยา' : base.treatmentTaskName.trim();
+
+      final everyDays = base.treatmentEveryDays; // ✅ ไม่ใส่ค่าเดาเอง
+
+      // ✅ ไม่บังคับ 4 ครั้งแล้ว และไม่เดาเอง
+      final totalTimes = base.treatmentTotalTimes;
+
+      final start = list
+          .map(_diagnosedAt)
+          .map(_dateOnly)
+          .reduce((a, b) => a.isBefore(b) ? a : b);
+
+      final parts = key.split('__');
+      final disease = parts.isNotEmpty ? parts[0] : base.disease;
+      final severity = parts.length > 1 ? parts[1] : base.severity;
+
+      out.add(
+        _Group(
+          key: key,
+          disease: disease,
+          severity: severity,
+          taskName: taskName,
+          everyDays: everyDays,
+          totalTimes: totalTimes,
+          startDate: start,
+          trees: list,
+        ),
+      );
+    });
+
+    return out;
+  }
+
+  List<DateTime> _generateOccurrences({
+    required DateTime start,
+    required int everyDays,
+    required int totalTimes,
+  }) {
+    // ✅ ถ้า API ยังไม่ส่ง everyDays/totalTimes มา -> ไม่สร้างวันรักษา
+    if (everyDays <= 0 || totalTimes <= 0) return const [];
+
+    final s = _dateOnly(start);
+    final List<DateTime> out = [];
+    for (int i = 0; i < totalTimes; i++) {
+      out.add(s.add(Duration(days: everyDays * i)));
+    }
+    return out;
+  }
+
+  List<_DueItem> _dueItemsOf(DateTime day) => _dueIndex[_dateKey(day)] ?? const [];
+  bool _hasDue(DateTime day) => _dueItemsOf(day).isNotEmpty;
+
+  bool _isAllDoneOnDay(DateTime day) {
+    final items = _dueItemsOf(day);
+    if (items.isEmpty) return false;
+    return items.every((it) => it.isDoneAllTrees());
+  }
+
+  void _setDoneForGroup({
+    required _Group group,
+    required DateTime day,
+    required bool done,
+  }) {
+    final k = _dateKey(day);
+
+    final updated = _trees.map((t) {
+      final isInGroup = group.trees.any((x) => x.id == t.id);
+      if (!isInGroup) return t;
+
+      final nextDone = Set<String>.from(t.treatmentDoneDates);
+      if (done) {
+        nextDone.add(k);
+      } else {
+        nextDone.remove(k);
+      }
+      return t.copyWith(treatmentDoneDates: nextDone);
+    }).toList();
+
+    setState(() => _trees = updated);
+
+    widget.onTreesUpdated?.call(List<CitrusTreeRecord>.from(_trees));
+    _rebuildIndex();
+  }
+
+  // ✅ FIX: สวิตช์ใน dialog ต้องเปลี่ยนทันที + กดแล้วปิด dialog กลับหน้าหลักเลย
+  Future<void> _openDueDialog(DateTime day) async {
+    if (_dueItemsOf(day).isEmpty) return;
+    if (!mounted) return;
+
+    final dateText = '${day.day}/${day.month}/${day.year}';
+
+    final Map<String, bool> tempSwitch = {};
+
+    await showDialog(
       context: context,
       barrierDismissible: true,
-      barrierColor: Colors.black54, // พื้นหลังเทา ๆ ด้านหลัง
-      builder: (ctx) {
-        return Dialog(
-          backgroundColor: const Color.fromARGB(255, 255, 255, 255), // บล็อกสีข้าว
-          insetPadding: const EdgeInsets.symmetric(
-            horizontal: 24,
-            vertical: 80,
-          ), // ให้เป็นบล็อกลอยกลางจอ
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(28),
-          ),
-          child: StatefulBuilder(
-            builder: (ctx, setModalState) {
-              final List<DayNoteResult> notes =
-                  _dayNotes[key] ?? const <DayNoteResult>[];
+      builder: (dialogCtx) {
+        return StatefulBuilder(
+          builder: (dialogCtx, setDialogState) {
+            final items = _dueItemsOf(day);
 
-              if (notes.isEmpty) {
-                return Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Text(
-                        'ยังไม่มีบันทึกสำหรับวันนี้',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      SizedBox(
-                        width: double.infinity,
-                        child: OutlinedButton.icon(
-                          icon: const Icon(Icons.add),
-                          label: const Text('เพิ่มบันทึกใหม่'),
-                          onPressed: () async {
-                            Navigator.of(ctx).pop();
-                            await _openDayNote(day);
-                          },
-                        ),
+            return Dialog(
+              backgroundColor: Colors.transparent,
+              insetPadding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Center(
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(22),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.10),
+                        blurRadius: 18,
+                        offset: const Offset(0, 8),
                       ),
                     ],
                   ),
-                );
-              }
-
-              final dayText = '${day.day}/${day.month}/${day.year}';
-
-              return Padding(
-                padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
-                child: SingleChildScrollView(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // แถวหัว + ปุ่มปิด
                       Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text(
-                            'บันทึกวันที่ $dayText',
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w700,
+                          const Expanded(
+                            child: Text(
+                              'งานที่ต้องทำวันนี้',
+                              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
                             ),
                           ),
-                          IconButton(
-                            icon: const Icon(Icons.close),
-                            onPressed: () => Navigator.of(ctx).pop(),
+                          InkWell(
+                            onTap: () {
+                              if (Navigator.of(dialogCtx, rootNavigator: true).canPop()) {
+                                Navigator.of(dialogCtx, rootNavigator: true).pop();
+                              }
+                            },
+                            borderRadius: BorderRadius.circular(999),
+                            child: const Padding(
+                              padding: EdgeInsets.all(6),
+                              child: Icon(Icons.close, size: 20),
+                            ),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 6),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'วันที่: $dateText',
+                          style: const TextStyle(fontWeight: FontWeight.w500),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
 
-                      // รายการบันทึกทั้งหมดของวันนั้น
-                      ListView.separated(
-                        shrinkWrap: true,
-                        physics: const NeverScrollableScrollPhysics(),
-                        itemCount: notes.length,
-                        separatorBuilder: (_, __) =>
-                            const SizedBox(height: 10),
-                        itemBuilder: (ctx, index) {
-                          final note = notes[index];
+                      ...items.map((it) {
+                        final key = '${it.group.key}__${_dateKey(it.date)}';
+                        final bool doneNow = tempSwitch[key] ?? it.isDoneAllTrees();
 
-                          final bool isFertilizer =
-                              note.activity == ActivityKind.fertilizer;
-                          final icon =
-                              isFertilizer ? Icons.grass : Icons.sanitizer;
-                          final Color bgIcon = isFertilizer
-                              ? const Color(0xFFFF7A00)
-                              : const Color(0xFF4CAF50);
-                          final String activityLabel =
-                              isFertilizer ? 'ใส่ปุ๋ย' : 'พ่นยา';
-
-                          // ----- คำนวณสถานะ -----
-                          String statusLabel;
-                          Color statusColor;
-
-                          if (note.isReminder) {
-                            statusLabel =
-                                note.done ? 'ทำแล้ว' : 'ยังไม่ได้ทำ';
-                            statusColor =
-                                note.done ? Colors.green : Colors.red;
-                          } else {
-                            statusLabel = 'ทำแล้ว (บันทึกย้อนหลัง)';
-                            statusColor = kPrimaryGreen;
-                          }
-
-                          return Container(
-                            decoration: BoxDecoration(
-                              color: Colors.white, // การ์ดในบล็อกสีข้าว
-                              borderRadius: BorderRadius.circular(20),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.05),
-                                  blurRadius: 6,
-                                  offset: const Offset(0, 3),
-                                ),
-                              ],
-                            ),
-                            padding: const EdgeInsets.all(14),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  children: [
-                                    Container(
-                                      width: 34,
-                                      height: 34,
-                                      decoration: BoxDecoration(
-                                        color: bgIcon,
-                                        shape: BoxShape.circle,
-                                      ),
-                                      child: Icon(
-                                        icon,
-                                        color: Colors.white,
-                                        size: 18,
-                                      ),
-                                    ),
-                                    const SizedBox(width: 10),
-                                    Text(
-                                      activityLabel,
-                                      style: const TextStyle(
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 10),
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF7F7F7),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: const Color(0xFFEAEAEA)),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      '${it.group.taskName}  ${doneNow ? "(ทำแล้ว)" : "(ยังไม่ได้ทำ)"}',
+                                      style: TextStyle(
                                         fontSize: 16,
                                         fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 8),
-                                Text(
-                                  (note.noteText == null ||
-                                          note.noteText!.isEmpty)
-                                      ? 'ไม่มีรายละเอียด'
-                                      : note.noteText!,
-                                  style: const TextStyle(fontSize: 14),
-                                ),
-                                const SizedBox(height: 10),
-
-                                // แถวสถานะ + สวิตช์
-                                Row(
-                                  children: [
-                                    Text(
-                                      'สถานะ: $statusLabel',
-                                      style: TextStyle(
-                                        fontSize: 13,
-                                        color: statusColor,
-                                      ),
-                                    ),
-                                    const Spacer(),
-                                    if (note.isReminder)
-                                      Switch(
-                                        value: note.done,
-                                        activeColor: kPrimaryGreen,
-                                        onChanged: (v) {
-                                          // อัปเดตค่าใน map หลัก
-                                          setState(() {
-                                            final List<DayNoteResult> list =
-                                                List<DayNoteResult>.from(
-                                              _dayNotes[key] ??
-                                                  const <DayNoteResult>[],
-                                            );
-                                            list[index] = DayNoteResult(
-                                              date: note.date,
-                                              hasTask: note.hasTask,
-                                              isReminder: note.isReminder,
-                                              activity: note.activity,
-                                              done: v,
-                                              noteText: note.noteText,
-                                            );
-                                            _dayNotes[key] = list;
-                                          });
-
-                                          // อัปเดตใน dialog เองด้วย
-                                          setModalState(() {});
-                                        },
-                                      ),
-                                  ],
-                                ),
-
-                                const SizedBox(height: 8),
-
-                                // ปุ่มบันทึกสถานะ (โชว์เฉพาะ reminder + ทำแล้ว)
-                                if (note.isReminder && note.done)
-                                  Align(
-                                    alignment: Alignment.center,
-                                    child: SizedBox(
-                                      width: 220,
-                                      child: ElevatedButton.icon(
-                                        style: ElevatedButton.styleFrom(
-                                          backgroundColor: kPrimaryGreen,
-                                          foregroundColor: Colors.white,
-                                          shape: RoundedRectangleBorder(
-                                            borderRadius:
-                                                BorderRadius.circular(999),
-                                          ),
-                                          padding: const EdgeInsets.symmetric(
-                                            vertical: 10,
-                                            horizontal: 16,
-                                          ),
-                                        ),
-                                        onPressed: () async {
-                                          // TODO: ตรงนี้ถ้าต้องการ sync กับ backend จริง ๆ
-                                          // ให้เรียก CareLogsApi.update(...) หรือ API อื่นของคุณได้เลย
-                                          Navigator.of(ctx).pop();
-                                          ScaffoldMessenger.of(context)
-                                              .showSnackBar(
-                                            const SnackBar(
-                                              content: Text(
-                                                  'บันทึกสถานะการแจ้งเตือนแล้ว'),
-                                            ),
-                                          );
-                                        },
-                                        icon: const Icon(
-                                          Icons.save,
-                                          size: 18,
-                                        ),
-                                        label: const Text(
-                                          'บันทึก',
-                                          style: TextStyle(
-                                            fontSize: 14,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                        ),
+                                        color: doneNow ? kPrimaryGreen : Colors.red,
                                       ),
                                     ),
                                   ),
-                              ],
-                            ),
-                          );
-                        },
-                      ),
+                                  Switch(
+                                    value: doneNow,
+                                    activeColor: kPrimaryGreen,
+                                    onChanged: (v) {
+                                      setDialogState(() => tempSwitch[key] = v);
+                                      _setDoneForGroup(group: it.group, day: it.date, done: v);
 
-                      const SizedBox(height: 16),
-
-                      // ปุ่มเพิ่มบันทึกใหม่ในวันเดียวกัน
-                      SizedBox(
-                        width: double.infinity,
-                        child: OutlinedButton.icon(
-                          icon: const Icon(Icons.add),
-                          label: const Text('เพิ่มบันทึกใหม่'),
-                          onPressed: () async {
-                            Navigator.of(ctx).pop();
-                            await _openDayNote(day);
-                          },
-                        ),
-                      ),
+                                      Future.delayed(const Duration(milliseconds: 120), () {
+                                        if (Navigator.of(dialogCtx, rootNavigator: true).canPop()) {
+                                          Navigator.of(dialogCtx, rootNavigator: true).pop();
+                                        }
+                                      });
+                                    },
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                'โรค: ${it.group.disease}  •  ความรุนแรง: ${it.group.severity}',
+                                style: const TextStyle(fontWeight: FontWeight.w500),
+                              ),
+                              const SizedBox(height: 8),
+                              const Text(
+                                'ต้นที่ต้องรักษา:',
+                                style: TextStyle(fontWeight: FontWeight.w600),
+                              ),
+                              const SizedBox(height: 6),
+                              Wrap(
+                                spacing: 8,
+                                runSpacing: 8,
+                                children: it.group.trees
+                                    .map(
+                                      (t) => Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                        decoration: BoxDecoration(
+                                          color: Colors.white,
+                                          borderRadius: BorderRadius.circular(999),
+                                          border: Border.all(color: const Color(0xFFE1E1E1)),
+                                        ),
+                                        child: Text(
+                                          t.name,
+                                          style: const TextStyle(fontWeight: FontWeight.w500),
+                                        ),
+                                      ),
+                                    )
+                                    .toList(),
+                              ),
+                            ],
+                          ),
+                        );
+                      }),
                     ],
                   ),
                 ),
-              );
-            },
-          ),
+              ),
+            );
+          },
         );
       },
     );
   }
 
+  /// ✅ ตามที่ขอ:
+  /// - วันต้องรักษา = วงกลมเต็ม แดง / ถ้าทำแล้ว = เขียว
+  /// - วันปกติที่เลือก = วงขอบเขียว
+  Widget _dayCell(DateTime day, {required bool selected, required bool outside}) {
+    final bool due = _hasDue(day);
+    final bool allDone = due ? _isAllDoneOnDay(day) : false;
+
+    Color? fillColor;
+    BoxBorder? border;
+
+    if (due) {
+      fillColor = allDone ? kPrimaryGreen : Colors.red;
+    } else if (selected) {
+      border = Border.all(color: kPrimaryGreen, width: 2);
+    }
+
+    final Color textColor = due
+        ? Colors.white
+        : selected
+            ? kPrimaryGreen
+            : (outside ? Colors.grey.shade400 : Colors.black87);
+
+    return Center(
+      child: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: fillColor ?? Colors.transparent,
+          shape: BoxShape.circle,
+          border: border,
+        ),
+        alignment: Alignment.center,
+        child: Text(
+          '${day.day}',
+          style: TextStyle(color: textColor, fontWeight: FontWeight.w500),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    // สูงของบล็อกปฏิทิน ประมาณ 45% ของจอ
     final double calendarHeight = MediaQuery.of(context).size.height * 0.45;
 
     return Scaffold(
-      backgroundColor: kPageBg, // 👈 ใช้พื้นหลังครีมอ่อน
+      backgroundColor: kPageBg,
       body: SafeArea(
         child: Padding(
-          // ลด padding ด้านบนและล่าง ให้ทุกอย่างขยับขึ้น
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // ===== หัวข้อหน้า =====
               const Text(
-                'Home',
+                'หน้าหลัก',
                 style: TextStyle(
                   fontSize: 40,
-                  fontWeight: FontWeight.w700,
+                  fontWeight: FontWeight.w600,
                   color: Color(0xFF3A2A18),
                 ),
               ),
@@ -373,12 +443,12 @@ class _HomePageState extends State<HomePage> {
                 'ดูสภาพอากาศวันนี้ก่อนดูแลสวนส้มของคุณ',
                 style: TextStyle(
                   fontSize: 16,
+                  fontWeight: FontWeight.w400,
                   color: Color(0xFF8A6E55),
                 ),
               ),
               const SizedBox(height: 10),
 
-              // ===== การ์ดพยากรณ์อากาศ =====
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(16),
@@ -396,11 +466,7 @@ class _HomePageState extends State<HomePage> {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(
-                      Icons.wb_sunny_rounded,
-                      color: Colors.white,
-                      size: 40,
-                    ),
+                    const Icon(Icons.wb_sunny_rounded, color: Colors.white, size: 40),
                     const SizedBox(width: 12),
                     const Expanded(
                       child: Column(
@@ -408,21 +474,13 @@ class _HomePageState extends State<HomePage> {
                         children: [
                           Text(
                             'พยากรณ์อากาศวันนี้',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
-                              fontWeight: FontWeight.w700,
-                            ),
+                            style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500),
                           ),
                           SizedBox(height: 4),
                           Text(
                             'อุณหภูมิ 28°C  ·  ความชื้น 65%\n'
                             'สภาพอากาศเหมาะสำหรับการตรวจโรคและดูแลสวนส้ม',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 13,
-                              height: 1.4,
-                            ),
+                            style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w400, height: 1.4),
                           ),
                         ],
                       ),
@@ -431,14 +489,7 @@ class _HomePageState extends State<HomePage> {
                     const Column(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        Text(
-                          'ดี',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
+                        Text('ดี', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w500)),
                       ],
                     ),
                   ],
@@ -447,183 +498,82 @@ class _HomePageState extends State<HomePage> {
 
               const SizedBox(height: 16),
 
-              // ===== หัวข้อปฏิทิน =====
               const Text(
                 'ปฏิทินสวนส้ม',
                 style: TextStyle(
                   fontSize: 24,
-                  fontWeight: FontWeight.w700,
+                  fontWeight: FontWeight.w600,
                   color: Color(0xFF3A2A18),
                 ),
               ),
               const SizedBox(height: 4),
               const Text(
-                'แตะวันที่ เพื่อบันทึกสิ่งที่ทำวันนี้ หรือสร้างการแจ้งเตือนล่วงหน้า',
-                style: TextStyle(
-                  fontSize: 14,
-                  color: Colors.black54,
-                ),
+                'แตะวันที่เพื่อดูงานรักษา (ถ้ามี)',
+                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w400, color: Colors.black54),
               ),
               const SizedBox(height: 8),
 
-              // ===== บล็อกปฏิทิน (TableCalendar) =====
               SizedBox(
                 height: calendarHeight,
                 child: Card(
-                  color: kCalendarBg,
+                  color: kCalendarCardBg,
                   elevation: 0,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(26),
-                  ),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 8,
-                    ),
-                    child: TableCalendar<DayNoteResult>(
-                      firstDay: DateTime.now()
-                          .subtract(const Duration(days: 365)),
-                      lastDay: DateTime.now()
-                          .add(const Duration(days: 365 * 3)),
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                    child: TableCalendar(
+                      firstDay: DateTime.now().subtract(const Duration(days: 365)),
+                      lastDay: DateTime.now().add(const Duration(days: 365 * 3)),
                       focusedDay: _focusedDay,
-
-                      // วันไหนถูกเลือก
-                      selectedDayPredicate: (day) =>
-                          isSameDay(day, _selectedDate),
-
-                      // โหลด event ของแต่ละวัน
-                      eventLoader: _getNotesForDay,
-
                       startingDayOfWeek: StartingDayOfWeek.monday,
-
                       headerStyle: const HeaderStyle(
                         formatButtonVisible: false,
                         titleCentered: true,
+                        titleTextStyle: TextStyle(fontSize: 18, fontWeight: FontWeight.w500),
+                        leftChevronIcon: Icon(Icons.chevron_left, color: Color(0xFF6F4E37)),
+                        rightChevronIcon: Icon(Icons.chevron_right, color: Color(0xFF6F4E37)),
                       ),
-
-                      calendarStyle: CalendarStyle(
-                        todayDecoration: BoxDecoration(
-                          color: kPrimaryGreen.withOpacity(0.75),
-                          shape: BoxShape.circle,
-                        ),
-                        selectedDecoration: const BoxDecoration(
-                          color: kPrimaryGreen,
-                          shape: BoxShape.circle,
-                        ),
-                        markersAlignment: Alignment.bottomCenter,
-                        markersMaxCount: 1,
+                      daysOfWeekStyle: const DaysOfWeekStyle(
+                        weekdayStyle: TextStyle(fontWeight: FontWeight.w400),
+                        weekendStyle: TextStyle(fontWeight: FontWeight.w400),
                       ),
-
-                      // เวลาเปลี่ยนหน้าเดือน
-                      onPageChanged: (focusedDay) {
-                        _focusedDay = focusedDay;
-                      },
-
-                      // เวลาแตะวันที่
-                      onDaySelected: (selectedDay, focusedDay) {
+                      selectedDayPredicate: (day) => isSameDay(day, _selectedDate),
+                      calendarStyle: const CalendarStyle(
+                        isTodayHighlighted: false,
+                        outsideDaysVisible: true,
+                      ),
+                      rowHeight: 52,
+                      daysOfWeekHeight: 28,
+                      onPageChanged: (focusedDay) => setState(() => _focusedDay = focusedDay),
+                      onDaySelected: (selectedDay, focusedDay) async {
                         setState(() {
-                          _selectedDate = _dateOnly(selectedDay);
+                          _selectedDate = selectedDay;
                           _focusedDay = focusedDay;
                         });
-
-                        final notes = _getNotesForDay(selectedDay);
-                        if (notes.isEmpty) {
-                          _openDayNote(selectedDay);
-                        } else {
-                          _showDayDetailsSheet(selectedDay);
+                        if (_hasDue(selectedDay)) {
+                          await _openDueDialog(selectedDay);
                         }
                       },
-
-                      // วาดสัญลักษณ์บนวันนั้น ๆ
-                      calendarBuilders: CalendarBuilders<DayNoteResult>(
-                        markerBuilder: (context, date, events) {
-                          if (events.isEmpty) {
-                            return const SizedBox.shrink();
-                          }
-
-                          // ถ้ามีแต่ "บันทึกย้อนหลัง" ทั้งหมด (ไม่มี reminder เลย)
-                          final bool onlyLogs = events.isNotEmpty &&
-                              events.every((e) => e.isReminder == false);
-
-                          if (onlyLogs) {
-                            return Align(
-                              alignment: Alignment.bottomCenter,
-                              child: Container(
-                                margin: const EdgeInsets.only(bottom: 4),
-                                width: 22,
-                                height: 22,
-                                decoration: const BoxDecoration(
-                                  color: Color(0xFFFFC94A),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: const Icon(
-                                  Icons.sentiment_satisfied_alt,
-                                  size: 14,
-                                  color: Colors.white,
-                                ),
-                              ),
-                            );
-                          }
-
-                          // ---- ด้านล่างนี้คือเคสที่ "มี reminder อย่างน้อย 1 อัน" ----
-                          final reminders =
-                              events.where((e) => e.isReminder).toList();
-
-                          final bool hasFertilizer = reminders.any(
-                            (e) => e.activity == ActivityKind.fertilizer,
-                          );
-                          final bool hasSpray = reminders.any(
-                            (e) => e.activity == ActivityKind.spray,
-                          );
-
-                          IconData icon;
-                          Color bgColor;
-
-                          if (hasFertilizer && hasSpray) {
-                            icon = Icons.notifications_active_rounded;
-                            bgColor = const Color(0xFF6A4C93); // ม่วงเข้ม
-                          } else {
-                            final reminder = reminders.first;
-                            final bool isF =
-                                reminder.activity == ActivityKind.fertilizer;
-                            icon = isF ? Icons.grass : Icons.sanitizer;
-                            bgColor = isF
-                                ? const Color(0xFFFF7A00) // ส้ม = ใส่ปุ๋ย
-                                : const Color(0xFF4CAF50); // เขียว = พ่นยา
-                          }
-
-                          // ถ้าแจ้งเตือนในวันนั้น "ทำครบทุกอันแล้ว"
-                          final bool allDone =
-                              reminders.every((e) => e.done == true);
-                          if (allDone) {
-                            bgColor = bgColor.withOpacity(0.4);
-                          }
-
-                          return Align(
-                            alignment: Alignment.bottomCenter,
-                            child: Container(
-                              margin: const EdgeInsets.only(bottom: 4),
-                              width: 22,
-                              height: 22,
-                              decoration: BoxDecoration(
-                                color: bgColor,
-                                shape: BoxShape.circle,
-                              ),
-                              child: Icon(
-                                icon,
-                                size: 14,
-                                color: Colors.white,
-                              ),
-                            ),
-                          );
+                      calendarBuilders: CalendarBuilders(
+                        defaultBuilder: (context, day, focusedDay) {
+                          final selected = isSameDay(day, _selectedDate);
+                          return _dayCell(day, selected: selected, outside: false);
+                        },
+                        selectedBuilder: (context, day, focusedDay) =>
+                            _dayCell(day, selected: true, outside: false),
+                        todayBuilder: (context, day, focusedDay) {
+                          final selected = isSameDay(day, _selectedDate);
+                          return _dayCell(day, selected: selected, outside: false);
+                        },
+                        outsideBuilder: (context, day, focusedDay) {
+                          final selected = isSameDay(day, _selectedDate);
+                          return _dayCell(day, selected: selected, outside: true);
                         },
                       ),
                     ),
                   ),
                 ),
               ),
-
-              const SizedBox(height: 12),
             ],
           ),
         ),

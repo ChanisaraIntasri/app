@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 // สีเขียวหลัก
 const Color kPrimaryGreen = Color(0xFF005E33);
@@ -9,12 +10,21 @@ const Color kPrimaryGreen = Color(0xFF005E33);
 const String kUpdateProfileUrl =
     'https://latricia-nonodoriferous-snoopily.ngrok-free.dev/crud/api/auth/update_profile.php';
 
+// ✅ key ที่ใช้เก็บ token ใน SharedPreferences (ต้องใช้ให้ “ตรงกันทั้งแอป”)
+const String kPrefTokenKey = 'token';
+// (รองรับของเดิม) ถ้าเคยเซฟเป็น auth_token มาก่อน
+const String kPrefTokenLegacyKey = 'auth_token';
+
 class EditUsernamePage extends StatefulWidget {
-  final String initialUsername; // ชื่อเดิมของผู้ใช้
+  final String initialUsername;
+
+  // ✅ ส่ง token มาก็ได้ (แนะนำ) หรือปล่อยว่างให้หน้าอ่านจาก SharedPreferences
+  final String? token;
 
   const EditUsernamePage({
     super.key,
     required this.initialUsername,
+    this.token,
   });
 
   @override
@@ -34,14 +44,44 @@ class _EditUsernamePageState extends State<EditUsernamePage> {
   bool _obscureNew = true;
   bool _obscureConfirm = true;
 
+  String _token = ''; // ✅ token ที่จะใช้ยิง API
+
   @override
   void initState() {
     super.initState();
-    // เอาชื่อเดิมมาใส่ในช่องกรอก
     _usernameCtl = TextEditingController(text: widget.initialUsername);
     _currentPwdCtl = TextEditingController();
     _newPwdCtl = TextEditingController();
     _confirmPwdCtl = TextEditingController();
+
+    _initToken();
+  }
+
+  Future<void> _initToken() async {
+    // 1) ใช้ token ที่ส่งมาจากหน้าก่อนหน้า (ถ้ามี)
+    final fromNav = (widget.token ?? '').trim();
+    if (fromNav.isNotEmpty) {
+      setState(() => _token = fromNav);
+      return;
+    }
+
+    // 2) ถ้าไม่ส่งมา ให้ดึงจาก SharedPreferences
+    final prefs = await SharedPreferences.getInstance();
+    final saved = (prefs.getString(kPrefTokenKey) ??
+            prefs.getString(kPrefTokenLegacyKey) ??
+            '')
+        .trim();
+
+    // ถ้าเจอจาก key เดิม → copy มาเก็บใน key ใหม่ด้วย (ให้ตรงกันทั้งแอป)
+    if (saved.isNotEmpty &&
+        (prefs.getString(kPrefTokenKey) ?? '').trim().isEmpty) {
+      await prefs.setString(kPrefTokenKey, saved);
+    }
+
+    if (mounted) setState(() => _token = saved);
+
+    debugPrint('token(fromNav)=$fromNav');
+    debugPrint('token(fromPrefs)=$saved');
   }
 
   @override
@@ -53,7 +93,6 @@ class _EditUsernamePageState extends State<EditUsernamePage> {
     super.dispose();
   }
 
-  /// สร้าง style ของช่องกรอก (กรอบโค้งมน + ขอบเขียวตอนโฟกัส)
   InputDecoration _inputDecoration(String label) {
     return InputDecoration(
       labelText: label,
@@ -64,112 +103,142 @@ class _EditUsernamePageState extends State<EditUsernamePage> {
       ),
       enabledBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(18),
-        borderSide: BorderSide(
-          color: Colors.grey.shade300,
-          width: 1.2,
-        ),
+        borderSide: BorderSide(color: Colors.grey.shade300, width: 1.2),
       ),
       focusedBorder: const OutlineInputBorder(
         borderRadius: BorderRadius.all(Radius.circular(18)),
-        borderSide: BorderSide(
-          color: kPrimaryGreen,
-          width: 2,
-        ),
+        borderSide: BorderSide(color: kPrimaryGreen, width: 2),
       ),
     );
   }
 
-  /// แสดงกล่องแจ้งเตือนกลางหน้าจอ
   Future<void> _showErrorDialog(String message) async {
     if (!mounted) return;
     await showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(18),
-        ),
-        title: const Text(
-          'แจ้งเตือน',
-          style: TextStyle(fontWeight: FontWeight.w700),
-        ),
-        content: Text(
-          message,
-          style: const TextStyle(height: 1.4),
-        ),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: const Text('แจ้งเตือน',
+            style: TextStyle(fontWeight: FontWeight.w700)),
+        content: Text(message, style: const TextStyle(height: 1.4)),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text(
-              'ตกลง',
-              style: TextStyle(color: kPrimaryGreen),
-            ),
+            child: const Text('ตกลง', style: TextStyle(color: kPrimaryGreen)),
           ),
         ],
       ),
     );
   }
 
-  Future<void> _save() async {
-    // เช็คฟอร์ม ถ้าไม่ผ่าน แสดง dialog กลางจอ
-    if (!(_formKey.currentState?.validate() ?? false)) {
-      await _showErrorDialog('กรุณาตรวจสอบข้อมูลให้ถูกต้องและครบถ้วน');
+  String _prettyMessage(dynamic msg) {
+    if (msg == null) return '';
+    final s = msg.toString().trim();
+    if (s.isEmpty) return '';
+    return s;
+  }
+
+  Future<void> _submit() async {
+    FocusScope.of(context).unfocus();
+
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+
+    final newUsername = _usernameCtl.text.trim();
+    final currentPassword = _currentPwdCtl.text;
+    final newPassword = _newPwdCtl.text;
+    final confirmPassword = _confirmPwdCtl.text;
+
+    if (_token.trim().isEmpty) {
+      await _showErrorDialog(
+          'ไม่พบข้อมูลการเข้าสู่ระบบ (token)\nกรุณาเข้าสู่ระบบใหม่อีกครั้ง');
       return;
+    }
+
+    // ถ้าจะเปลี่ยนรหัสผ่าน → ต้องกรอกครบ และยืนยันตรงกัน
+    final wantChangePassword =
+        currentPassword.isNotEmpty || newPassword.isNotEmpty || confirmPassword.isNotEmpty;
+
+    if (wantChangePassword) {
+      if (currentPassword.isEmpty ||
+          newPassword.isEmpty ||
+          confirmPassword.isEmpty) {
+        await _showErrorDialog('หากต้องการเปลี่ยนรหัสผ่าน กรุณากรอกให้ครบทุกช่อง');
+        return;
+      }
+      if (newPassword != confirmPassword) {
+        await _showErrorDialog('รหัสผ่านใหม่และยืนยันรหัสผ่านไม่ตรงกัน');
+        return;
+      }
+      if (newPassword.length < 6) {
+        await _showErrorDialog('รหัสผ่านใหม่ต้องมีอย่างน้อย 6 ตัวอักษร');
+        return;
+      }
     }
 
     setState(() => _loading = true);
 
     try {
-      final newUsername = _usernameCtl.text.trim();
-      final currentPassword = _currentPwdCtl.text;
-      final newPassword = _newPwdCtl.text.trim();
-      final confirmPassword = _confirmPwdCtl.text.trim();
-
-      // เตรียม body สำหรับส่งไป API
-      final Map<String, dynamic> body = {
-        "username": newUsername,
+      final body = <String, dynamic>{
+        'username': newUsername,
       };
 
-      // ถ้ามีการกรอกรหัสผ่านใหม่ (ถือว่า user ต้องการเปลี่ยนรหัส)
-      if (newPassword.isNotEmpty || confirmPassword.isNotEmpty) {
-        body["current_password"] = currentPassword;
-        body["new_password"] = newPassword;
+      if (wantChangePassword) {
+        body['current_password'] = currentPassword;
+        body['new_password'] = newPassword;
       }
 
       final res = await http.post(
         Uri.parse(kUpdateProfileUrl),
         headers: {
-          "Content-Type": "application/json; charset=utf-8",
+          'Content-Type': 'application/json; charset=utf-8',
+          'Authorization': 'Bearer $_token',
         },
         body: jsonEncode(body),
       );
 
-      if (res.statusCode != 200) {
-        throw Exception("HTTP ${res.statusCode}");
+      Map<String, dynamic>? decoded;
+      try {
+        decoded = jsonDecode(res.body) as Map<String, dynamic>;
+      } catch (_) {
+        decoded = null;
       }
 
-      final data = jsonDecode(res.body);
+      final ok = decoded != null && decoded!['ok'] == true;
 
-      // { "status": "success", "message": "อัปเดตสำเร็จ", ... }
-      if (data["status"] == "success") {
+      if (res.statusCode == 200 && ok) {
+        final dataObj = decoded!['data'];
+        final updatedUsername =
+            (dataObj is Map<String, dynamic> && dataObj['username'] != null)
+                ? dataObj['username'].toString()
+                : newUsername;
+
+        final msg = (dataObj is Map<String, dynamic>)
+            ? _prettyMessage(dataObj['message'])
+            : 'อัปเดตข้อมูลสำเร็จ';
+
         if (!mounted) return;
 
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              data["message"]?.toString() ?? "อัปเดตข้อมูลสำเร็จ",
-            ),
-            backgroundColor: kPrimaryGreen,
-          ),
+          SnackBar(content: Text(msg), backgroundColor: kPrimaryGreen),
         );
 
-        // ส่งชื่อใหม่กลับไปหน้า Setting ให้ไปอัปเดต UI ต่อ
-        Navigator.pop(context, newUsername);
-      } else {
-        final msg = data["message"]?.toString() ?? "อัปเดตไม่สำเร็จ";
-        await _showErrorDialog(msg);
+        // ✅ อัปเดตชื่อใน SharedPreferences ด้วย
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('username', updatedUsername);
+
+        Navigator.pop(context, updatedUsername);
+        return;
       }
+
+      final msg = _prettyMessage(decoded?['message']);
+      if (res.statusCode == 401) {
+        await _showErrorDialog('หมดอายุการเข้าสู่ระบบ/ยังไม่ได้ล็อกอิน\n$msg');
+        return;
+      }
+
+      await _showErrorDialog('อัปเดตไม่สำเร็จ (HTTP ${res.statusCode})\n$msg');
     } catch (e) {
-      await _showErrorDialog('เกิดข้อผิดพลาดในการอัปเดตข้อมูล\n$e');
+      await _showErrorDialog('เครือข่ายมีปัญหา กรุณาลองใหม่อีกครั้ง');
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -178,198 +247,150 @@ class _EditUsernamePageState extends State<EditUsernamePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFFDFDFD),
+      backgroundColor: const Color(0xFFF4F4F4),
       appBar: AppBar(
-        backgroundColor: kPrimaryGreen,
-        foregroundColor: Colors.white,
-        title: const Text('แก้ไขโปรไฟล์'),
+        backgroundColor: const Color(0xFFF4F4F4),
+        elevation: 0,
+        title: const Text(
+          'แก้ไขโปรไฟล์',
+          style: TextStyle(
+            color: Colors.black87,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        iconTheme: const IconThemeData(color: Colors.black87),
       ),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24.0),
-          child: Form(
-            key: _formKey,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // ===== ส่วนแก้ไขชื่อผู้ใช้ =====
-                const Text(
-                  'ข้อมูลบัญชี',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: kPrimaryGreen,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextFormField(
-                  controller: _usernameCtl,
-                  decoration: _inputDecoration('ชื่อผู้ใช้'),
-                  validator: (v) {
-                    final t = v?.trim() ?? '';
-                    if (t.isEmpty) return 'กรุณากรอกชื่อผู้ใช้';
-                    if (t.length < 3) return 'ต้องมีอย่างน้อย 3 ตัวอักษร';
-                    return null;
-                  },
-                ),
-
-                const SizedBox(height: 32),
-                const Divider(),
-                const SizedBox(height: 16),
-
-                // ===== ส่วนเปลี่ยนรหัสผ่าน =====
-                const Text(
-                  'เปลี่ยนรหัสผ่าน (ไม่บังคับ)',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: kPrimaryGreen,
-                  ),
-                ),
-                const SizedBox(height: 12),
-
-                // รหัสผ่านปัจจุบัน
-                TextFormField(
-                  controller: _currentPwdCtl,
-                  obscureText: _obscureCurrent,
-                  decoration: _inputDecoration('รหัสผ่านปัจจุบัน').copyWith(
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        _obscureCurrent
-                            ? Icons.visibility_off
-                            : Icons.visibility,
-                      ),
-                      onPressed: () {
-                        setState(() {
-                          _obscureCurrent = !_obscureCurrent;
-                        });
-                      },
+          padding: const EdgeInsets.all(16),
+          child: Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFFEFEFEF),
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: Form(
+              key: _formKey,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text(
+                    'ข้อมูลบัญชี',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
-                  validator: (v) {
-                    final newPwd = _newPwdCtl.text;
-                    final confirmPwd = _confirmPwdCtl.text;
-                    final cur = v ?? '';
+                  const SizedBox(height: 12),
 
-                    // ถ้ามีการกรอกรหัสผ่านใหม่/ยืนยัน ต้องบังคับให้ใส่รหัสผ่านปัจจุบัน
-                    if (newPwd.isNotEmpty || confirmPwd.isNotEmpty) {
-                      if (cur.isEmpty) {
-                        return 'กรุณากรอกรหัสผ่านปัจจุบัน';
-                      }
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 16),
-
-                // รหัสผ่านใหม่
-                TextFormField(
-                  controller: _newPwdCtl,
-                  obscureText: _obscureNew,
-                  decoration: _inputDecoration('รหัสผ่านใหม่').copyWith(
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        _obscureNew ? Icons.visibility_off : Icons.visibility,
-                      ),
-                      onPressed: () {
-                        setState(() {
-                          _obscureNew = !_obscureNew;
-                        });
-                      },
-                    ),
-                  ),
-                  validator: (v) {
-                    final t = v ?? '';
-                    final confirmPwd = _confirmPwdCtl.text;
-
-                    // ถ้าผู้ใช้ไม่กรอกรหัสใหม่เลย (ทั้ง new + confirm ว่าง) แปลว่าไม่เปลี่ยนรหัสผ่าน -> ผ่าน
-                    if (t.isEmpty && confirmPwd.isEmpty) {
+                  TextFormField(
+                    controller: _usernameCtl,
+                    decoration: _inputDecoration('ชื่อผู้ใช้'),
+                    validator: (v) {
+                      final t = v?.trim() ?? '';
+                      if (t.isEmpty) return 'กรุณากรอกชื่อผู้ใช้';
+                      if (t.length < 3) return 'ชื่อผู้ใช้ต้องมีอย่างน้อย 3 ตัวอักษร';
                       return null;
-                    }
+                    },
+                  ),
 
-                    // ถ้าเริ่มจะเปลี่ยนรหัส ต้องเช็คความยาว
-                    if (t.length < 6) {
-                      return 'รหัสผ่านใหม่ต้องมีอย่างน้อย 6 ตัวอักษร';
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 16),
+                  const SizedBox(height: 18),
+                  const Divider(),
+                  const SizedBox(height: 10),
 
-                // ยืนยันรหัสผ่านใหม่
-                TextFormField(
-                  controller: _confirmPwdCtl,
-                  obscureText: _obscureConfirm,
-                  decoration: _inputDecoration('ยืนยันรหัสผ่านใหม่').copyWith(
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        _obscureConfirm
-                            ? Icons.visibility_off
-                            : Icons.visibility,
-                      ),
-                      onPressed: () {
-                        setState(() {
-                          _obscureConfirm = !_obscureConfirm;
-                        });
-                      },
+                  const Text(
+                    'เปลี่ยนรหัสผ่าน (ไม่บังคับ)',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w700,
                     ),
                   ),
-                  validator: (v) {
-                    final newPwd = _newPwdCtl.text;
-                    final confirm = v ?? '';
+                  const SizedBox(height: 12),
 
-                    // ถ้าทั้ง new/confirm ว่าง แปลว่าไม่เปลี่ยนรหัสผ่าน
-                    if (newPwd.isEmpty && confirm.isEmpty) {
-                      return null;
-                    }
-
-                    if (confirm.isEmpty) {
-                      return 'กรุณายืนยันรหัสผ่านใหม่';
-                    }
-
-                    if (confirm != newPwd) {
-                      return 'รหัสผ่านใหม่และการยืนยันไม่ตรงกัน';
-                    }
-
-                    return null;
-                  },
-                ),
-
-                const SizedBox(height: 32),
-
-                // ===== ปุ่มบันทึก =====
-                SizedBox(
-                  width: double.infinity,
-                  height: 48,
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: kPrimaryGreen,
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(18),
+                  TextFormField(
+                    controller: _currentPwdCtl,
+                    obscureText: _obscureCurrent,
+                    decoration: _inputDecoration('รหัสผ่านเดิม').copyWith(
+                      suffixIcon: IconButton(
+                        icon: Icon(
+                          _obscureCurrent
+                              ? Icons.visibility_off
+                              : Icons.visibility,
+                          color: kPrimaryGreen,
+                        ),
+                        onPressed: () =>
+                            setState(() => _obscureCurrent = !_obscureCurrent),
                       ),
                     ),
-                    onPressed: _loading ? null : _save,
-                    child: _loading
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              valueColor:
-                                  AlwaysStoppedAnimation<Color>(Colors.white),
-                            ),
-                          )
-                        : const Text(
-                            'บันทึก',
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
                   ),
-                ),
-              ],
+                  const SizedBox(height: 12),
+
+                  TextFormField(
+                    controller: _newPwdCtl,
+                    obscureText: _obscureNew,
+                    decoration: _inputDecoration('รหัสผ่านใหม่').copyWith(
+                      suffixIcon: IconButton(
+                        icon: Icon(
+                          _obscureNew ? Icons.visibility_off : Icons.visibility,
+                          color: kPrimaryGreen,
+                        ),
+                        onPressed: () =>
+                            setState(() => _obscureNew = !_obscureNew),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+
+                  TextFormField(
+                    controller: _confirmPwdCtl,
+                    obscureText: _obscureConfirm,
+                    decoration:
+                        _inputDecoration('ยืนยันรหัสผ่านใหม่').copyWith(
+                      suffixIcon: IconButton(
+                        icon: Icon(
+                          _obscureConfirm
+                              ? Icons.visibility_off
+                              : Icons.visibility,
+                          color: kPrimaryGreen,
+                        ),
+                        onPressed: () => setState(
+                            () => _obscureConfirm = !_obscureConfirm),
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 18),
+
+                  SizedBox(
+                    height: 48,
+                    child: ElevatedButton(
+                      onPressed: _loading ? null : _submit,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: kPrimaryGreen,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                      child: _loading
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Text(
+                              'บันทึก',
+                              style: TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                    ),
+                  )
+                ],
+              ),
             ),
           ),
         ),

@@ -12,7 +12,7 @@ class SignUpScreen extends StatefulWidget {
 }
 
 class _SignUpScreenState extends State<SignUpScreen> {
-  // ===== BRAND COLOR (เขียว) =====
+  // ===== สีหลัก =====
   static const Color kBrandGreen = Color(0xFF005E33);
 
   // ===== API =====
@@ -50,6 +50,10 @@ class _SignUpScreenState extends State<SignUpScreen> {
     );
   }
 
+  bool _isValidEmail(String email) {
+    return RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(email);
+  }
+
   Future<void> _register() async {
     FocusScope.of(context).unfocus();
 
@@ -77,11 +81,10 @@ class _SignUpScreenState extends State<SignUpScreen> {
       if (success) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Registered successfully! Please sign in.'),
-          ),
+          const SnackBar(content: Text('สมัครสมาชิกสำเร็จ กรุณาเข้าสู่ระบบ')),
         );
-        // กลับไปหน้า SignIn
+
+        // กลับไปหน้าเข้าสู่ระบบ
         Navigator.of(context).pushAndRemoveUntil(
           MaterialPageRoute(builder: (_) => const SignInScreen()),
           (route) => false,
@@ -97,16 +100,16 @@ class _SignUpScreenState extends State<SignUpScreen> {
             msg = 'รหัสผ่านสั้นเกินไป';
             break;
           default:
-            msg = code.isEmpty ? 'สมัครสมาชิกไม่สำเร็จ' : code;
+            msg = code.isEmpty ? 'สมัครสมาชิกไม่สำเร็จ กรุณาลองใหม่อีกครั้ง' : code;
         }
+
         if (!mounted) return;
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(msg)));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
       }
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Network error: $e')),
+        const SnackBar(content: Text('เครือข่ายมีปัญหา กรุณาลองใหม่อีกครั้ง')),
       );
     } finally {
       if (mounted) setState(() => _loading = false);
@@ -116,12 +119,11 @@ class _SignUpScreenState extends State<SignUpScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white, // โทนเดียวกับ SignIn
+      backgroundColor: Colors.white,
       body: SafeArea(
         child: GestureDetector(
           onTap: () => FocusScope.of(context).unfocus(),
           child: Align(
-            // 🔥 ขยับบล็อกขึ้นข้างบนเล็กน้อย
             alignment: const Alignment(0, -0.50),
             child: SingleChildScrollView(
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
@@ -131,23 +133,25 @@ class _SignUpScreenState extends State<SignUpScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    // ===== Header =====
+                    // ===== Header (ไทยล้วน) =====
                     const Text(
-                      'signup',
+                      'สมัครสมาชิก',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 30,
                         fontWeight: FontWeight.w800,
                         color: Colors.black87,
+                        height: 1.2,
                       ),
                     ),
                     const SizedBox(height: 8),
                     const Text(
-                      "",
+                      'สร้างบัญชีเพื่อเริ่มใช้งาน',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                        fontSize: 13,
+                        fontSize: 15,
                         color: Colors.black54,
+                        height: 1.35,
                       ),
                     ),
                     const SizedBox(height: 24),
@@ -156,11 +160,13 @@ class _SignUpScreenState extends State<SignUpScreen> {
                     TextFormField(
                       controller: _nameCtl,
                       textInputAction: TextInputAction.next,
-                      decoration: _decoration('Username'),
-                      validator: (v) =>
-                          (v == null || v.trim().isEmpty)
-                              ? 'Please enter username'
-                              : null,
+                      decoration: _decoration('ชื่อผู้ใช้'),
+                      validator: (v) {
+                        if (v == null || v.trim().isEmpty) {
+                          return 'กรุณากรอกชื่อผู้ใช้';
+                        }
+                        return null;
+                      },
                     ),
                     const SizedBox(height: 12),
 
@@ -168,15 +174,12 @@ class _SignUpScreenState extends State<SignUpScreen> {
                       controller: _emailCtl,
                       keyboardType: TextInputType.emailAddress,
                       textInputAction: TextInputAction.next,
-                      decoration: _decoration('Email'),
+                      decoration: _decoration('อีเมล'),
                       validator: (v) {
                         final value = v?.trim() ?? '';
-                        if (value.isEmpty) {
-                          return 'Please enter email';
-                        }
-                        final ok = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
-                            .hasMatch(value);
-                        return ok ? null : 'Email is invalid';
+                        if (value.isEmpty) return 'กรุณากรอกอีเมล';
+                        if (!_isValidEmail(value)) return 'รูปแบบอีเมลไม่ถูกต้อง';
+                        return null;
                       },
                     ),
                     const SizedBox(height: 12),
@@ -185,12 +188,10 @@ class _SignUpScreenState extends State<SignUpScreen> {
                       controller: _passCtl,
                       obscureText: _obscure,
                       textInputAction: TextInputAction.done,
-                      decoration: _decoration('Password').copyWith(
+                      decoration: _decoration('รหัสผ่าน').copyWith(
                         suffixIcon: IconButton(
                           icon: Icon(
-                            _obscure
-                                ? Icons.visibility_off
-                                : Icons.visibility,
+                            _obscure ? Icons.visibility_off : Icons.visibility,
                             color: kBrandGreen,
                           ),
                           onPressed: () =>
@@ -198,11 +199,9 @@ class _SignUpScreenState extends State<SignUpScreen> {
                         ),
                       ),
                       validator: (v) {
-                        if (v == null || v.isEmpty) {
-                          return 'Please enter password';
-                        }
+                        if (v == null || v.isEmpty) return 'กรุณากรอกรหัสผ่าน';
                         if (v.length < 6) {
-                          return 'At least 6 characters';
+                          return 'รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร';
                         }
                         return null;
                       },
@@ -211,7 +210,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
                     const SizedBox(height: 20),
 
-                    // ===== ปุ่ม Sign up (เขียว) =====
+                    // ===== ปุ่มสมัครสมาชิก =====
                     SizedBox(
                       height: 52,
                       child: ElevatedButton(
@@ -234,7 +233,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                                 ),
                               )
                             : const Text(
-                                'Sign up',
+                                'สมัครสมาชิก',
                                 style: TextStyle(
                                   fontSize: 16,
                                   fontWeight: FontWeight.w600,
@@ -245,17 +244,18 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
                     const SizedBox(height: 20),
 
-                    // ===== OR =====
+                    // ===== หรือ =====
                     Row(
                       children: const [
                         Expanded(child: Divider()),
                         Padding(
                           padding: EdgeInsets.symmetric(horizontal: 12),
                           child: Text(
-                            'OR',
+                            'หรือ',
                             style: TextStyle(
                               fontWeight: FontWeight.w700,
                               fontSize: 12,
+                              color: Colors.black54,
                             ),
                           ),
                         ),
@@ -269,15 +269,14 @@ class _SignUpScreenState extends State<SignUpScreen> {
                       height: 48,
                       child: OutlinedButton(
                         onPressed: () {
-                          // TODO: Sign up / Sign in with Google
+                          // TODO: สมัคร/เข้าสู่ระบบด้วย Google
                         },
                         style: OutlinedButton.styleFrom(
                           side: const BorderSide(color: Color(0xFFE5E7EB)),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(999),
                           ),
-                          padding:
-                              const EdgeInsets.symmetric(horizontal: 16),
+                          padding: const EdgeInsets.symmetric(horizontal: 16),
                         ),
                         child: Row(
                           children: const [
@@ -289,10 +288,10 @@ class _SignUpScreenState extends State<SignUpScreen> {
                             SizedBox(width: 12),
                             Expanded(
                               child: Text(
-                                'Continue with Google',
+                                'ดำเนินการต่อด้วย Google',
                                 textAlign: TextAlign.center,
                                 style: TextStyle(
-                                  fontSize: 14,
+                                  fontSize: 13.5,
                                   color: Colors.black87,
                                   fontWeight: FontWeight.w500,
                                 ),
@@ -305,7 +304,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
                     const SizedBox(height: 18),
 
-                    // ===== ปุ่มกลับไป Sign in (เขียว) =====
+                    // ===== ปุ่มไปหน้าเข้าสู่ระบบ =====
                     SizedBox(
                       height: 52,
                       child: ElevatedButton(
@@ -327,7 +326,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                           ),
                         ),
                         child: const Text(
-                          'Sign in',
+                          'เข้าสู่ระบบ',
                           style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w600,

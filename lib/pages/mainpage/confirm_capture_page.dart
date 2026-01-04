@@ -13,17 +13,28 @@ class ConfirmCapturePage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final file = File(imagePath);
+
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          // ✅ รูปเต็มจอ
+          // ✅ รูปเต็มจอ (กันกรณีไฟล์หาย)
           Positioned.fill(
-            child: Image.file(
-              File(imagePath),
-              fit: BoxFit.cover,
-              alignment: Alignment.center,
-            ),
+            child: file.existsSync()
+                ? Image.file(
+                    file,
+                    fit: BoxFit.cover,
+                    alignment: Alignment.center,
+                  )
+                : Container(
+                    color: Colors.black12,
+                    alignment: Alignment.center,
+                    child: const Text(
+                      'ไม่พบไฟล์รูปภาพ',
+                      style: TextStyle(color: Colors.white),
+                    ),
+                  ),
           ),
 
           // ✅ ปุ่มย้อนกลับ (ไม่มีแถบด้านบนแล้ว)
@@ -85,10 +96,7 @@ class ConfirmCapturePage extends StatelessWidget {
                         onPressed: () => Navigator.pop(context, false),
                         style: OutlinedButton.styleFrom(
                           foregroundColor: Colors.white,
-                          side: BorderSide(
-                            color: Colors.white.withOpacity(0.7),
-                            width: 2,
-                          ),
+                          side: const BorderSide(color: Colors.white70),
                           padding: const EdgeInsets.symmetric(vertical: 16),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(18),
@@ -98,7 +106,7 @@ class ConfirmCapturePage extends StatelessWidget {
                           'ถ่ายใหม่',
                           style: TextStyle(
                             fontSize: 16,
-                            fontWeight: FontWeight.w700,
+                            fontWeight: FontWeight.w800,
                           ),
                         ),
                       ),

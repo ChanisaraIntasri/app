@@ -1,15 +1,42 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:flutter_application_1/models/citrus_tree_record.dart';
-import 'package:flutter_application_1/pages/mainpage/scan_page.dart';
 import 'package:flutter_application_1/pages/mainpage/tree_history_page.dart';
 
-const kBg = Color.fromARGB(255, 255, 255, 255);
+// ✅ หน้าทดสอบเลือกโรค + หน้าคำถาม
+import 'package:flutter_application_1/pages/diagnosis/disease_select_page.dart';
+import 'package:flutter_application_1/pages/diagnosis/disease_questions_page.dart';
+
+// ================== THEME ==================
+const kBg = Color(0xFFFFFFFF);
 const kPrimaryGreen = Color(0xFF005E33);
 const kCardBg = Color(0xFFEDEDED);
+const kTextBrown = Color(0xFF5B4636);
+const kTextGrey = Color(0xFF8C8C8C);
+
+// ================== API ==================
+// ✅ แก้ API_BASE ให้เป็นของคุณ
+// ตัวอย่าง: https://xxxx.ngrok-free.dev/crud/api
+const String API_BASE = String.fromEnvironment(
+  'API_BASE',
+  defaultValue: 'https://latricia-nonodoriferous-snoopily.ngrok-free.dev/crud/api',
+);
+
+// ✅ ตอนนี้ยังไม่มีโมเดลสแกน → ใช้ flow เลือกโรคแทน
+const bool kMockScanFlow = true;
+
+// ✅ ปรับ “ระยะยก” ปุ่ม + ให้พ้นแถบเมนูด้านล่าง
+const double kFabLift = 92;
+
+// ✅ แสดงแฟลชการ์ดแนะนำการใช้งานครั้งแรก (เปลี่ยน key ได้ถ้าต้องการให้โชว์ใหม่)
+const String kShareIntroSeenKey = 'share_intro_seen_v1';
 
 class SharePage extends StatefulWidget {
-  const SharePage({super.key}); // หน้า History
+  const SharePage({super.key});
 
   @override
   State<SharePage> createState() => _SharePageState();
@@ -18,377 +45,763 @@ class SharePage extends StatefulWidget {
 class _SharePageState extends State<SharePage> {
   final List<CitrusTreeRecord> _records = [];
 
-  bool _showIntro = true;
+  bool _loading = true;
+  bool _busy = false;
   int _nextTreeNumber = 1;
 
-  String _fmtDate(DateTime dt) => '${dt.day}/${dt.month}/${dt.year}';
+  bool _showIntroOverlay = false;
 
-  CitrusTreeRecord _newRecordAutoName(String name) {
-    final now = DateTime.now();
+  @override
+  void initState() {
+    super.initState();
+    _loadTrees();
+
+    // ✅ แฟลชการ์ดแนะนำการใช้งานครั้งแรก
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _maybeShowIntro();
+    });
+  }
+
+  // ---------- Token / Headers ----------
+  Future<String?> _readToken() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('token') ??
+        prefs.getString('access_token') ??
+        prefs.getString('auth_token');
+  }
+
+  Map<String, String> _headers(String? token) => {
+        'Accept': 'application/json',
+        if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+      };
+
+  // ---------- Helpers ----------
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Uri _uri(String path, [Map<String, String>? q]) {
+    final base = API_BASE.endsWith('/')
+        ? API_BASE.substring(0, API_BASE.length - 1)
+        : API_BASE;
+    final p = path.startsWith('/') ? path.substring(1) : path;
+    return Uri.parse('$base/$p').replace(queryParameters: q);
+  }
+
+  dynamic _tryDecode(String s) {
+    try {
+      return json.decode(s);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  List<dynamic> _extractList(dynamic decoded) {
+    if (decoded is List) return decoded;
+    if (decoded is Map<String, dynamic>) {
+      if (decoded['data'] is List) return decoded['data'];
+      if (decoded['records'] is List) return decoded['records'];
+      if (decoded['items'] is List) return decoded['items'];
+      if (decoded['result'] is List) return decoded['result'];
+    }
+    return [];
+  }
+
+  int _guessNextTreeNumber(List<CitrusTreeRecord> list) {
+    int mx = 0;
+    final reg = RegExp(r'(\d+)$');
+    for (final r in list) {
+      final m = reg.firstMatch(r.name.trim());
+      if (m != null) {
+        final n = int.tryParse(m.group(1) ?? '');
+        if (n != null && n > mx) mx = n;
+      }
+    }
+    return mx + 1;
+  }
+  // ✅ เรียงลำดับต้นส้ม: ต้นที่ 1 อยู่บนสุด แล้วไล่ไปเรื่อย ๆ
+  int _orderOf(CitrusTreeRecord r) {
+    final m = RegExp(r'(\d+)$').firstMatch(r.name.trim());
+    if (m != null) {
+      final n = int.tryParse(m.group(1) ?? '');
+      if (n != null) return n;
+    }
+    return 1 << 30; // ถ้าไม่มีเลข → ไปท้าย
+  }
+
+  void _sortRecords(List<CitrusTreeRecord> list) {
+    list.sort((a, b) {
+      final na = _orderOf(a);
+      final nb = _orderOf(b);
+      if (na != nb) return na.compareTo(nb);
+      return a.createdAt.compareTo(b.createdAt);
+    });
+  }
+
+  String _fmtDate(DateTime dt) {
+    final d = dt.day.toString().padLeft(2, '0');
+    final m = dt.month.toString().padLeft(2, '0');
+    final y = dt.year.toString().padLeft(4, '0');
+    return '$d/$m/$y';
+  }
+
+  CitrusTreeRecord _recordFromApiRow(Map<String, dynamic> m) {
+    // read_orange_trees.php คืน: tree_id, user_id, tree_name, description, created_at
+    final id = (m['tree_id'] ?? m['id'] ?? '').toString();
+    final name = (m['tree_name'] ?? m['name'] ?? '').toString();
+    final plot = (m['description'] ?? '').toString();
+
+    DateTime createdAt = DateTime.now();
+    final rawCreated = m['created_at'] ?? m['createdAt'];
+    if (rawCreated != null) {
+      final dt = DateTime.tryParse(rawCreated.toString());
+      if (dt != null) createdAt = dt;
+    }
+
     return CitrusTreeRecord(
-      id: now.microsecondsSinceEpoch.toString(),
-      name: name,
-      plot: '',
+      id: id,
+      name: name.isEmpty ? 'ต้นส้ม' : name,
+      plot: plot,
       disease: '',
       recommendation: '',
       note: '',
-      createdAt: now,
+      createdAt: createdAt,
       lastScanAt: null,
-      lastScanImagePath: null,
+      lastScanImagePath: '',
       scanHistory: const [],
       treatmentTaskName: 'พ่นยา',
-      treatmentEveryDays: 3,
-      treatmentStartDate: now,
+      treatmentEveryDays: 7,
+      treatmentStartDate: createdAt,
+      // ✅ ต้องเป็น Set<String>
       treatmentDoneDates: const <String>{},
     );
   }
 
-  void _quickAddOneTree() {
-    final name = 'ต้นที่ $_nextTreeNumber';
-    _nextTreeNumber++;
+  // ---------- API ----------
+  Future<void> _loadTrees({bool silent = false}) async {
+    if (!silent) setState(() => _loading = true);
 
-    setState(() {
-      _records.add(_newRecordAutoName(name));
-      _showIntro = false;
-    });
+    try {
+      final token = await _readToken();
+      final res = await http.get(
+        _uri('orange_trees/read_orange_trees.php'),
+        headers: _headers(token),
+      );
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('เพิ่ม $name แล้ว')),
-    );
-  }
+      final decoded = _tryDecode(res.body);
+      final list = _extractList(decoded);
 
-  void _quickAddManyTrees(int count) {
-    if (count <= 0) return;
-
-    final List<CitrusTreeRecord> adding = [];
-    for (int i = 0; i < count; i++) {
-      final name = 'ต้นที่ $_nextTreeNumber';
-      _nextTreeNumber++;
-      adding.add(_newRecordAutoName(name));
-    }
-
-    setState(() {
-      _records.addAll(adding);
-      _showIntro = false;
-    });
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('เพิ่ม $count ต้นเรียบร้อย')),
-    );
-  }
-
-  Future<void> _showAddManyDialog() async {
-    if (!mounted) return;
-
-    String input = '';
-    String? errorText;
-
-    final int? result = await showDialog<int>(
-      context: context,
-      useRootNavigator: true,
-      barrierDismissible: true,
-      builder: (ctx) {
-        return StatefulBuilder(
-          builder: (ctx, setLocal) {
-            return Dialog(
-              backgroundColor: Colors.white,
-              insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'เพิ่มหลายต้น',
-                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
-                    ),
-                    const SizedBox(height: 10),
-                    TextFormField(
-                      keyboardType: TextInputType.number,
-                      onChanged: (v) {
-                        input = v.trim();
-                        setLocal(() => errorText = null);
-                      },
-                      decoration: InputDecoration(
-                        hintText: 'กรอกจำนวนต้น เช่น 20',
-                        errorText: errorText,
-                        filled: true,
-                        fillColor: kCardBg,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(18),
-                          borderSide: BorderSide.none,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton(
-                            onPressed: () => Navigator.of(ctx, rootNavigator: true).pop(null),
-                            style: OutlinedButton.styleFrom(
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(18),
-                              ),
-                            ),
-                            child: const Text('ยกเลิก'),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: ElevatedButton(
-                            onPressed: () {
-                              final n = int.tryParse(input);
-                              if (n == null || n <= 0) {
-                                setLocal(() => errorText = 'กรุณากรอกจำนวนที่ถูกต้อง');
-                                return;
-                              }
-                              Navigator.of(ctx, rootNavigator: true).pop(n);
-                            },
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: kPrimaryGreen,
-                              foregroundColor: Colors.white,
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(18),
-                              ),
-                            ),
-                            child: const Text('เพิ่ม'),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-
-    if (!mounted) return;
-    if (result != null && result > 0) {
-      _quickAddManyTrees(result);
-    }
-  }
-
-  Future<void> _openScanForTree(int index) async {
-    final current = _records[index];
-
-    final dynamic scanResult =
-        await Navigator.of(context, rootNavigator: true).push<dynamic>(
-      MaterialPageRoute(
-        builder: (_) => ScanPage(
-          treeId: current.id,
-          treeName: current.name,
-        ),
-      ),
-    );
-
-    if (scanResult == null) return;
-
-    String disease = '';
-    String? imagePath;
-    DateTime scannedAt = DateTime.now();
-
-    if (scanResult is String) {
-      disease = scanResult;
-    } else if (scanResult is Map) {
-      disease = (scanResult['disease'] ?? '').toString();
-      imagePath = scanResult['imagePath']?.toString();
-      final v = scanResult['scannedAt'];
-      if (v is String) {
-        scannedAt = DateTime.tryParse(v) ?? scannedAt;
-      } else if (v is DateTime) {
-        scannedAt = v;
+      final items = <CitrusTreeRecord>[];
+      for (final row in list) {
+        if (row is Map<String, dynamic>) {
+          items.add(_recordFromApiRow(row));
+        } else if (row is Map) {
+          items.add(_recordFromApiRow(Map<String, dynamic>.from(row)));
+        }
       }
+
+      // ✅ เรียงจาก ต้นที่ 1 → ... ตามเลขท้ายชื่อ
+      _sortRecords(items);
+
+      if (!mounted) return;
+      setState(() {
+        _records
+          ..clear()
+          ..addAll(items);
+        _nextTreeNumber = _guessNextTreeNumber(items);
+      });
+    } catch (e) {
+      _snack('โหลดต้นส้มไม่สำเร็จ: $e');
+    } finally {
+      if (!silent && mounted) setState(() => _loading = false);
     }
+  }
 
-    if (disease.trim().isEmpty) return;
+// ---------- Intro (Flash cards) ----------
+Future<void> _maybeShowIntro() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    final seen = prefs.getBool(kShareIntroSeenKey) ?? false;
+    if (!seen && mounted) {
+      setState(() => _showIntroOverlay = true);
+    }
+  } catch (_) {
+    // ถ้า prefs มีปัญหา → ก็ยังให้ใช้งานต่อได้
+  }
+}
 
-    setState(() {
-      final old = _records[index];
+Future<void> _dismissIntro() async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(kShareIntroSeenKey, true);
+  } catch (_) {}
+  if (mounted) setState(() => _showIntroOverlay = false);
+}
 
-      final newHistory = List<TreeScanItem>.from(old.scanHistory);
-      newHistory.add(
-        TreeScanItem(
-          disease: disease.trim(),
-          scannedAt: scannedAt,
-          imagePath: imagePath,
-        ),
+
+  Future<void> _createTree({required String name, String description = ''}) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+
+    try {
+      final token = await _readToken();
+      final body = json.encode({
+        'tree_name': name,
+        'description': description,
+      });
+
+      final res = await http.post(
+        _uri('orange_trees/create_orange_trees.php'),
+        headers: {
+          ..._headers(token),
+          'Content-Type': 'application/json; charset=utf-8',
+        },
+        body: body,
       );
 
-      _records[index] = old.copyWith(
-        disease: disease.trim(),
-        lastScanAt: scannedAt,
-        lastScanImagePath: imagePath,
-        scanHistory: newHistory,
-        // ตั้งวันเริ่มแผน = วันสแกนล่าสุด (ถ้ายังไม่เคยตั้งเอง)
-        treatmentStartDate: old.treatmentStartDate,
+      final decoded = _tryDecode(res.body);
+
+      // ✅ รองรับรูปแบบตอบกลับหลายแบบ
+      final ok = decoded is Map &&
+          ((decoded['ok'] == true) || (decoded['success'] == true) || (decoded['status'] == true));
+
+      if (ok) {
+        // พยายามดึง id ที่ backend ส่งกลับมา (ถ้ามี)
+        String newId = '';
+        if (decoded is Map) {
+          newId = (decoded['tree_id'] ??
+                  decoded['id'] ??
+                  decoded['treeId'] ??
+                  (decoded['data'] is Map ? (decoded['data']['tree_id'] ?? decoded['data']['id']) : null) ??
+                  '')
+              .toString();
+        }
+
+        final createdAt = DateTime.now();
+        final record = CitrusTreeRecord(
+          id: newId.isNotEmpty ? newId : 'tmp_${DateTime.now().millisecondsSinceEpoch}',
+          name: name.isEmpty ? 'ต้นส้ม' : name,
+          plot: description,
+          disease: '',
+          recommendation: '',
+          note: '',
+          createdAt: createdAt,
+          lastScanAt: null,
+          lastScanImagePath: '',
+          scanHistory: const [],
+          treatmentTaskName: 'พ่นยา',
+          treatmentEveryDays: 7,
+          treatmentStartDate: createdAt,
+          treatmentDoneDates: const <String>{},
+        );
+
+        if (!mounted) return;
+        setState(() {
+          _records.add(record);
+          _sortRecords(_records);
+        });
+
+        // ถ้า backend ไม่ส่ง id มา → sync แบบเงียบเพื่อให้ได้ id จริง (ไม่ขึ้นโหลด)
+        if (newId.isEmpty) {
+          await _loadTrees(silent: true);
+        }
+      } else {
+        _snack('เพิ่มต้นส้มไม่สำเร็จ');
+      }
+    } catch (e) {
+      _snack('เพิ่มต้นส้มไม่สำเร็จ: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+Future<void> _updateTree(
+    CitrusTreeRecord r, {
+    required String name,
+    required String description,
+  }) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+
+    try {
+      final token = await _readToken();
+      final body = json.encode({
+        'tree_id': int.tryParse(r.id) ?? 0,
+        'tree_name': name,
+        'description': description,
+      });
+
+      final res = await http.post(
+        _uri('orange_trees/update_orange_trees.php'),
+        headers: {
+          ..._headers(token),
+          'Content-Type': 'application/json; charset=utf-8',
+        },
+        body: body,
+      );
+
+      final decoded = _tryDecode(res.body);
+      if (decoded is Map<String, dynamic> && decoded['ok'] == true) {
+        await _loadTrees(silent: true);
+      } else {
+        _snack('อัปเดตไม่สำเร็จ');
+      }
+    } catch (e) {
+      _snack('อัปเดตไม่สำเร็จ: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _deleteTree(CitrusTreeRecord r) async {
+    if (_busy) return;
+
+    // ✅ ลบออกจากรายการทันที (ให้ UI เร็ว ไม่ต้องโหลด)
+    final index = _records.indexWhere((x) => x.id == r.id);
+    CitrusTreeRecord? removed;
+    if (index >= 0) {
+      removed = _records[index];
+      setState(() {
+        _records.removeAt(index);
+      });
+    }
+
+    setState(() => _busy = true);
+
+    try {
+      final token = await _readToken();
+      final res = await http.delete(
+        _uri('orange_trees/delete_orange_trees.php', {'tree_id': r.id}),
+        headers: _headers(token),
+      );
+
+      final decoded = _tryDecode(res.body);
+      final ok = decoded is Map &&
+          ((decoded['ok'] == true) || (decoded['success'] == true) || (decoded['status'] == true));
+
+      if (!ok) {
+        throw Exception('DELETE_FAILED');
+      }
+    } catch (e) {
+      // ❌ ถ้าลบไม่สำเร็จ → ใส่กลับ
+      if (removed != null && mounted) {
+        setState(() {
+          final insertAt = (index >= 0 && index <= _records.length) ? index : _records.length;
+          _records.insert(insertAt, removed!);
+          _sortRecords(_records);
+        });
+      }
+      _snack('ลบไม่สำเร็จ: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+// ---------- UX Actions ----------
+  Future<void> _addTreeAutoName() async {
+    final name = 'ต้นที่ $_nextTreeNumber';
+    _nextTreeNumber += 1;
+    await _createTree(name: name, description: '');
+  }
+
+  Future<void> _addManyTreesDialog() async {
+    final controller = TextEditingController(text: '5');
+
+    final n = await showDialog<int?>
+        (context: context, builder: (_) {
+      return AlertDialog(
+        title: const Text('เพิ่มหลายต้น'),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(
+            hintText: 'จำนวนต้น เช่น 5',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, null), child: const Text('ยกเลิก')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: kPrimaryGreen),
+            onPressed: () {
+              final v = int.tryParse(controller.text.trim());
+              Navigator.pop(context, v);
+            },
+            child: const Text('เพิ่ม'),
+          ),
+        ],
       );
     });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('บันทึกผลสแกนให้ ${_records[index].name} แล้ว')),
+    if (n == null || n <= 0) return;
+
+    for (int i = 0; i < n; i++) {
+      await _addTreeAutoName();
+    }
+  }
+
+  Future<void> _openHistory(CitrusTreeRecord r) async {
+
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => TreeHistoryPage(record: r)),
     );
   }
 
-  Future<void> _openHistoryForTree(int index) async {
-    final current = _records[index];
+  Future<void> _openScanFlow(CitrusTreeRecord r) async {
+    if (!kMockScanFlow) return;
 
-    final CitrusTreeRecord? updated =
-        await Navigator.of(context, rootNavigator: true).push<CitrusTreeRecord>(
+    // ✅ ใหม่: เลือกโรคแล้วไปหน้า “วินิจฉัยโรค” (DiseaseDiagnosisPage) ทันที
+    // แล้วค่อยกดปุ่ม “ตอบคำถาม” จากหน้า DiseaseDiagnosisPage เพื่อไปหน้า DiseaseQuestionsPage
+    if (!mounted) return;
+
+    final treeIdInt = int.tryParse('${r.id}');
+
+    await Navigator.push(
+      context,
       MaterialPageRoute(
-        builder: (_) => TreeHistoryPage(record: current),
+        settings: RouteSettings(arguments: {'treeId': treeIdInt}),
+        builder: (_) => DiseaseSelectPage(
+          fetchFromApi: true,
+          treeId: treeIdInt,
+          navigateToDiagnosis: true,
+        ),
       ),
     );
 
-    if (updated == null) return;
-
-    setState(() {
-      _records[index] = updated;
-    });
+    // กลับมาแล้วค่อยรีเฟรชรายการต้น/สถานะ
+    await _loadTrees();
   }
 
-  Future<void> _showRecordDetail(CitrusTreeRecord record, int index) async {
-    String nameDraft = record.name;
-    String plotDraft = record.plot;
-
-    final String? action = await showDialog<String>(
+  Future<bool> _confirmDelete(CitrusTreeRecord r) async {
+    final ok = await showDialog<bool>(
       context: context,
-      useRootNavigator: true,
-      barrierDismissible: true,
-      builder: (ctx) {
-        final hasScan = record.disease.trim().isNotEmpty;
-        final scanText = hasScan ? 'ผลล่าสุด: ${record.disease}' : 'ยังไม่ถ่ายรูปใบส้ม';
-        final scanDate =
-            record.lastScanAt != null ? ' (${_fmtDate(record.lastScanAt!)})' : '';
+      builder: (_) => AlertDialog(
+        title: const Text('ลบบันทึกนี้?'),
+        content: Text('ต้องการลบ "${r.name}" ใช่ไหม'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('ยกเลิก')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('ลบ'),
+          ),
+        ],
+      ),
+    );
+    return ok == true;
+  }
 
+  // ---------- UI Parts ----------
+  Widget _banner() {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
+      decoration: BoxDecoration(
+        color: kPrimaryGreen,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'บันทึกประวัติสวนส้ม',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 22.0, // ✅ ให้เหมือนในรูป
+              fontWeight: FontWeight.w600, // ✅ บางลง
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'สร้างรายการ “ต้นส้ม” แล้วถ่ายรูปใบส้มเป็นรายต้น\nแตะที่การ์ดเพื่อดูรายละเอียด',
+            style: TextStyle(
+              color: Colors.white70,
+              height: 1.35,
+              fontSize: 13.5,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerRight,
+            child: OutlinedButton.icon(
+              onPressed: _busy ? null : _addManyTreesDialog,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white,
+                side: const BorderSide(color: Colors.white54, width: 1.2),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              ),
+              icon: const Icon(Icons.playlist_add),
+              label: const Text(
+                'เพิ่มหลายต้น',
+                style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14.0),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _swipeDeleteBackground() {
+    return Container(
+      alignment: Alignment.centerLeft,
+      padding: const EdgeInsets.only(left: 18),
+      decoration: BoxDecoration(
+        color: Colors.redAccent,
+        borderRadius: BorderRadius.circular(22),
+      ),
+      child: const Icon(Icons.delete, color: Colors.white),
+    );
+  }
+
+  Widget _treeCard(CitrusTreeRecord r) {
+    return InkWell(
+      onTap: () => _openTreeDetailDialog(r),
+      borderRadius: BorderRadius.circular(22),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: kCardBg,
+          borderRadius: BorderRadius.circular(22),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 52,
+              height: 52,
+              decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+              child: const Icon(Icons.eco, color: kPrimaryGreen, size: 26),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    r.name,
+                    style: const TextStyle(
+                      color: kTextBrown,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600, // ✅ บางลง
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'แตะเพื่อดูรายละเอียด',
+                    style: TextStyle(
+                      color: kTextBrown.withOpacity(0.65),
+                      fontSize: 13.8,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              _fmtDate(r.createdAt),
+              style: const TextStyle(
+                color: kTextGrey,
+                fontSize: 11.8,
+                fontWeight: FontWeight.w400,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _emptyState() {
+    return const Padding(
+      padding: EdgeInsets.only(top: 80),
+      child: Column(
+        children: [
+          Icon(Icons.spa, size: 62, color: Colors.black26),
+          SizedBox(height: 10),
+          Text(
+            'ยังไม่มีข้อมูลต้นส้ม',
+            style: TextStyle(color: Colors.black54, fontSize: 13.5, fontWeight: FontWeight.w800),
+          ),
+          SizedBox(height: 6),
+          Text('กดปุ่ม + เพื่อเพิ่มต้นส้ม', style: TextStyle(color: Colors.black38, fontSize: 13.0)),
+        ],
+      ),
+    );
+  }
+
+  Widget _fieldCard({
+    required String label,
+    required TextEditingController controller,
+    int maxLines = 1,
+    String? hintText,
+  }) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      decoration: BoxDecoration(
+        color: kCardBg,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(color: kTextBrown, fontWeight: FontWeight.w700, fontSize: 14.5),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: controller,
+            maxLines: maxLines,
+            decoration: InputDecoration(
+              isDense: true,
+              hintText: hintText,
+              hintStyle: TextStyle(color: kTextBrown.withOpacity(0.45), fontWeight: FontWeight.w400),
+              border: InputBorder.none,
+            ),
+            style: const TextStyle(color: Colors.black87, fontSize: 15.5, fontWeight: FontWeight.w600),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ✅ ข้อ 2: รายละเอียดต้นส้มเป็น “บล็อกอยู่ตรงกลาง” (Dialog)
+  Future<void> _openTreeDetailDialog(CitrusTreeRecord r) async {
+    final nameCtl = TextEditingController(text: r.name);
+    final descCtl = TextEditingController(text: r.plot);
+
+    await showDialog<void>(
+      context: context,
+      barrierColor: Colors.black54,
+      builder: (ctx) {
+        final viewInsets = MediaQuery.of(ctx).viewInsets;
         return Dialog(
           backgroundColor: Colors.white,
-          insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+          insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 90),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
+            padding: EdgeInsets.fromLTRB(18, 18, 18, 18 + viewInsets.bottom),
             child: SingleChildScrollView(
               child: Column(
-                mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   const Text(
                     'รายละเอียดต้นส้ม',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w900,
-                      color: Color(0xFF3A2A18),
-                    ),
+                    style: TextStyle(fontSize: 21.5, fontWeight: FontWeight.w800, color: kTextBrown),
+                  ),
+                  const SizedBox(height: 14),
+
+                  _fieldCard(
+                    label: 'ชื่อต้น / หมายเลขต้น',
+                    controller: nameCtl,
+                    hintText: 'เช่น ต้นที่ 1',
                   ),
                   const SizedBox(height: 12),
-
-                  // ✅ แก้ได้เลย (ไม่มีปุ่มแก้ไขด้านบน)
-                  _inputBlock(
-                    title: 'ชื่อต้น / หมายเลขต้น',
-                    initialValue: record.name,
-                    onChanged: (v) => nameDraft = v,
-                    hint: 'เช่น ต้นที่ 1',
-                  ),
-                  const SizedBox(height: 10),
-
-                  // ✅ เปลี่ยนบล็อกการสแกน -> "แปลง" (กรอกหรือไม่ก็ได้)
-                  _inputBlock(
-                    title: 'แปลง',
-                    initialValue: record.plot,
-                    onChanged: (v) => plotDraft = v,
-                    hint: 'เช่น แปลงที่ 1',
-                  ),
-                  const SizedBox(height: 10),
-
-                  // (ยังแสดงผลสแกนล่าสุดให้ผู้ใช้เห็น)
-                  _readonlyBlock(
-                    title: 'การถ่ายรูปใบส้ม',
-                    content: '$scanText$scanDate',
+                  _fieldCard(
+                    label: 'รายละเอียด',
+                    controller: descCtl,
+                    maxLines: 3,
+                    hintText: 'เช่น ต้นที่ 1 นับจากริมรั้ว',
                   ),
 
                   const SizedBox(height: 14),
-
                   Row(
                     children: [
                       Expanded(
-                        child: OutlinedButton.icon(
-                          onPressed: () => Navigator.of(ctx, rootNavigator: true).pop('history'),
-                          icon: const Icon(Icons.history),
-                          label: const Text('ดูประวัติ'),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: kPrimaryGreen,
-                            side: BorderSide(color: kPrimaryGreen.withOpacity(0.6)),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(18),
+                        child: SizedBox(
+                          height: 50,
+                          child: OutlinedButton.icon(
+                            onPressed: () async {
+                              Navigator.pop(ctx);
+                              await _openHistory(r);
+                            },
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: kPrimaryGreen,
+                              side: const BorderSide(color: kPrimaryGreen, width: 1.6),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
                             ),
-                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            icon: const Icon(Icons.history),
+                            label: const Text('ดูประวัติ', style: TextStyle(fontSize: 15.0, fontWeight: FontWeight.w700)),
                           ),
                         ),
                       ),
-                      const SizedBox(width: 10),
+                      const SizedBox(width: 12),
                       Expanded(
-                        child: ElevatedButton.icon(
-                          onPressed: () => Navigator.of(ctx, rootNavigator: true).pop('scan'),
-                          icon: const Icon(Icons.camera_alt_rounded),
-                          label: const Text('ถ่ายรูปใบส้ม'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: kPrimaryGreen,
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(18),
+                        child: SizedBox(
+                          height: 50,
+                          child: ElevatedButton.icon(
+                            onPressed: () async {
+                              Navigator.pop(ctx);
+                              await _openScanFlow(r);
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: kPrimaryGreen,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
                             ),
-                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            icon: const Icon(Icons.photo_camera),
+                            label: const Text('ถ่ายรูปใบส้ม', style: TextStyle(fontSize: 15.0, fontWeight: FontWeight.w700)),
                           ),
                         ),
                       ),
                     ],
                   ),
 
-                  const SizedBox(height: 14),
-
+                  const SizedBox(height: 10),
                   Text(
-                    'สร้างเมื่อ ${_fmtDate(record.createdAt)}',
-                    style: TextStyle(fontSize: 11, color: Colors.grey[500]),
+                    'สร้างเมื่อ ${_fmtDate(r.createdAt)}',
+                    style: const TextStyle(color: kTextGrey, fontWeight: FontWeight.w600, fontSize: 13.0),
                   ),
 
-                  const SizedBox(height: 18),
-
+                  const SizedBox(height: 14),
                   Row(
                     children: [
                       Expanded(
-                        child: OutlinedButton(
-                          onPressed: () => Navigator.of(ctx, rootNavigator: true).pop('delete'),
-                          style: OutlinedButton.styleFrom(
-                            foregroundColor: Colors.red,
-                            side: const BorderSide(color: Colors.red),
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(30),
+                        child: SizedBox(
+                          height: 52,
+                          child: OutlinedButton(
+                            onPressed: () async {
+                              final ok = await _confirmDelete(r);
+                              if (!ok) return;
+                              if (!ctx.mounted) return;
+                              Navigator.pop(ctx);
+                              await _deleteTree(r);
+                            },
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.red,
+                              side: const BorderSide(color: Colors.red, width: 1.6),
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
                             ),
-                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            child: const Text('ลบบันทึกนี้', style: TextStyle(fontSize: 16.0, fontWeight: FontWeight.w700)),
                           ),
-                          child: const Text('ลบบันทึกนี้'),
                         ),
                       ),
                       const SizedBox(width: 12),
-
-                      // ✅ ปิด -> บันทึก
                       Expanded(
-                        child: ElevatedButton(
-                          onPressed: () => Navigator.of(ctx, rootNavigator: true).pop('save'),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: kPrimaryGreen,
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(30),
+                        child: SizedBox(
+                          height: 52,
+                          child: ElevatedButton(
+                            onPressed: () async {
+                              final name = nameCtl.text.trim();
+                              final desc = descCtl.text.trim();
+                              if (name.isEmpty) {
+                                _snack('กรุณากรอกชื่อ/หมายเลขต้น');
+                                return;
+                              }
+                              Navigator.pop(ctx);
+                              await _updateTree(r, name: name, description: desc);
+                            },
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: kPrimaryGreen,
+                              foregroundColor: Colors.white,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
                             ),
-                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            child: const Text('บันทึก', style: TextStyle(fontSize: 16.0, fontWeight: FontWeight.w700)),
                           ),
-                          child: const Text('บันทึก'),
                         ),
                       ),
                     ],
@@ -400,341 +813,73 @@ class _SharePageState extends State<SharePage> {
         );
       },
     );
-
-    if (!mounted) return;
-
-    if (action == 'delete') {
-      setState(() => _records.removeAt(index));
-      return;
-    }
-
-    if (action == 'save') {
-      setState(() {
-        final old = _records[index];
-        _records[index] = old.copyWith(
-          name: nameDraft.trim().isEmpty ? old.name : nameDraft.trim(),
-          plot: plotDraft.trim(),
-        );
-      });
-      return;
-    }
-
-    if (action == 'scan') {
-      // บันทึกชื่อ/แปลงก่อนเปิดกล้อง
-      setState(() {
-        final old = _records[index];
-        _records[index] = old.copyWith(
-          name: nameDraft.trim().isEmpty ? old.name : nameDraft.trim(),
-          plot: plotDraft.trim(),
-        );
-      });
-      await _openScanForTree(index);
-      return;
-    }
-
-    if (action == 'history') {
-      // บันทึกชื่อ/แปลงก่อนเปิดหน้าประวัติ
-      setState(() {
-        final old = _records[index];
-        _records[index] = old.copyWith(
-          name: nameDraft.trim().isEmpty ? old.name : nameDraft.trim(),
-          plot: plotDraft.trim(),
-        );
-      });
-      await _openHistoryForTree(index);
-      return;
-    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: kBg,
-      body: SafeArea(
-        child: Stack(
-          children: [
-            CustomScrollView(
-              slivers: [
-                SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-                  sliver: SliverToBoxAdapter(
-                    child: Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.fromLTRB(16, 18, 16, 14),
-                      margin: const EdgeInsets.only(bottom: 12),
-                      decoration: BoxDecoration(
-                        color: kPrimaryGreen,
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'บันทึกประวัติสวนส้ม',
-                            style: TextStyle(
-                              fontSize: 20,
-                              fontWeight: FontWeight.w700,
-                              color: Colors.white,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          const Text(
-                            'สร้างรายการ “ต้นส้ม” แล้วถ่ายรูปใบส้มเป็นรายต้น\n'
-                            'แตะที่การ์ดเพื่อดูรายละเอียด',
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: Colors.white70,
-                              height: 1.3,
-                            ),
-                          ),
-                          const SizedBox(height: 10),
-                          Align(
-                            alignment: Alignment.centerRight,
-                            child: TextButton.icon(
-                              onPressed: _showAddManyDialog,
-                              icon: const Icon(Icons.playlist_add, size: 18),
-                              label: const Text('เพิ่มหลายต้น'),
-                              style: TextButton.styleFrom(
-                                foregroundColor: Colors.white,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                  vertical: 8,
-                                ),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(18),
-                                  side: const BorderSide(color: Colors.white54),
-                                ),
+      body: Stack(
+        children: [
+          SafeArea(
+                  child: RefreshIndicator(
+                    onRefresh: _loadTrees,
+                    child: ListView(
+                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 140),
+                      children: [
+                        _banner(),
+                        const SizedBox(height: 16),
+                        if (_loading)
+                          const Padding(
+                            padding: EdgeInsets.only(top: 40),
+                            child: Center(child: CircularProgressIndicator()),
+                          )
+                        else if (_records.isEmpty)
+                          _emptyState()
+                        else
+                          ..._records.map(
+                            (r) => Padding(
+                              padding: const EdgeInsets.only(bottom: 14),
+                              child: Dismissible(
+                                key: ValueKey('tree_${r.id}_${r.name}'),
+                                direction: DismissDirection.startToEnd, // ปัดไปทางขวาเพื่อลบ
+                                background: _swipeDeleteBackground(),
+                                onDismissed: (_) => _deleteTree(r),
+                                child: _treeCard(r),
                               ),
                             ),
                           ),
-                        ],
-                      ),
+                      ],
                     ),
                   ),
                 ),
 
-                if (_records.isEmpty)
-                  SliverFillRemaining(
-                    hasScrollBody: false,
-                    child: Center(
-                      child: Text(
-                        'ยังไม่มีรายการต้นส้ม\nกดปุ่ม + เพื่อเพิ่ม “ต้นที่ 1” ทันที',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(fontSize: 14, color: Colors.grey[600]),
-                      ),
-                    ),
-                  )
-                else
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                    sliver: SliverList(
-                      delegate: SliverChildBuilderDelegate(
-                        (context, index) {
-                          final record = _records[index];
-
-                          String subtitle;
-                          if (record.disease.trim().isNotEmpty) {
-                            subtitle = 'ผลล่าสุด: ${record.disease}';
-                          } else if (record.plot.trim().isNotEmpty) {
-                            subtitle = 'แปลง: ${record.plot}';
-                          } else {
-                            subtitle = 'แตะเพื่อดูรายละเอียด';
-                          }
-
-                          final rightDate = record.lastScanAt ?? record.createdAt;
-
-                          return Padding(
-                            padding: const EdgeInsets.only(bottom: 14),
-                            child: Dismissible(
-                              key: ValueKey(record.id),
-                              direction: DismissDirection.endToStart,
-                              onDismissed: (_) => setState(() => _records.removeAt(index)),
-                              background: Container(
-                                alignment: Alignment.centerRight,
-                                padding: const EdgeInsets.only(right: 16),
-                                decoration: BoxDecoration(
-                                  color: Colors.red.withOpacity(0.08),
-                                  borderRadius: BorderRadius.circular(24),
-                                ),
-                                child: const Icon(Icons.delete, color: Colors.red, size: 22),
-                              ),
-                              child: GestureDetector(
-                                onTap: () => _showRecordDetail(record, index),
-                                child: Container(
-                                  width: double.infinity,
-                                  decoration: BoxDecoration(
-                                    color: kCardBg,
-                                    borderRadius: BorderRadius.circular(24),
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: Colors.black.withOpacity(0.04),
-                                        blurRadius: 8,
-                                        offset: const Offset(0, 4),
-                                      ),
-                                    ],
-                                  ),
-                                  padding: const EdgeInsets.all(14),
-                                  child: Row(
-                                    crossAxisAlignment: CrossAxisAlignment.center,
-                                    children: [
-                                      Container(
-                                        width: 44,
-                                        height: 44,
-                                        decoration: const BoxDecoration(
-                                          color: Colors.white,
-                                          shape: BoxShape.circle,
-                                        ),
-                                        child: const Icon(Icons.spa_rounded, color: kPrimaryGreen),
-                                      ),
-                                      const SizedBox(width: 12),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            Text(
-                                              record.name,
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: const TextStyle(
-                                                fontSize: 15,
-                                                fontWeight: FontWeight.w700,
-                                                color: Color(0xFF3A2A18),
-                                              ),
-                                            ),
-                                            const SizedBox(height: 4),
-                                            Text(
-                                              subtitle,
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: const TextStyle(
-                                                fontSize: 12,
-                                                color: Color(0xFF8A6E55),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                      const SizedBox(width: 8),
-                                      Text(
-                                        _fmtDate(rightDate),
-                                        style: TextStyle(fontSize: 11, color: Colors.grey[600]),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
-                          );
-                        },
-                        childCount: _records.length,
-                      ),
-                    ),
-                  ),
-              ],
+          if (_showIntroOverlay)
+            _IntroOverlay(
+              onDone: _dismissIntro,
             ),
-
-            if (_showIntro && _records.isEmpty)
-              Positioned.fill(
-                child: _IntroOverlay(
-                  onSkip: () => setState(() => _showIntro = false),
-                  onDone: () => setState(() => _showIntro = false),
-                ),
-              ),
-          ],
-        ),
+        ],
       ),
 
+      // ✅ ข้อ 1: ยกปุ่ม + ขึ้น ไม่ให้แถบเมนูบัง
       floatingActionButton: Padding(
-        padding: const EdgeInsets.only(bottom: 80),
+        padding: const EdgeInsets.only(bottom: kFabLift),
         child: FloatingActionButton(
-          onPressed: _quickAddOneTree,
+          onPressed: _busy ? null : _addTreeAutoName,
           backgroundColor: kCardBg,
-          elevation: 3,
-          child: const Icon(Icons.add, color: Colors.black87),
+          foregroundColor: Colors.black87,
+          elevation: 6,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          child: const Icon(Icons.add, size: 28),
         ),
       ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
     );
   }
 }
 
-// ---------- helpers (ไม่ใช้ TextEditingController กันพัง) ----------
 
-Widget _readonlyBlock({required String title, required String content}) {
-  return Container(
-    width: double.infinity,
-    padding: const EdgeInsets.all(12),
-    decoration: BoxDecoration(
-      color: kCardBg,
-      borderRadius: BorderRadius.circular(16),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          title,
-          style: const TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-            color: Color(0xFF3A2A18),
-          ),
-        ),
-        const SizedBox(height: 6),
-        Text(
-          content,
-          style: TextStyle(
-            fontSize: 13,
-            color: content.trim().isEmpty ? Colors.grey[500] : const Color(0xFF5A4634),
-            height: 1.4,
-          ),
-        ),
-      ],
-    ),
-  );
-}
+// ================== INTRO OVERLAY (Flash cards) ==================
 
-Widget _inputBlock({
-  required String title,
-  required String initialValue,
-  required ValueChanged<String> onChanged,
-  String? hint,
-  int maxLines = 1,
-}) {
-  return Container(
-    width: double.infinity,
-    padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
-    decoration: BoxDecoration(
-      color: kCardBg,
-      borderRadius: BorderRadius.circular(16),
-    ),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          title,
-          style: const TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-            color: Color(0xFF3A2A18),
-          ),
-        ),
-        const SizedBox(height: 6),
-        TextFormField(
-          initialValue: initialValue,
-          onChanged: onChanged,
-          maxLines: maxLines,
-          decoration: InputDecoration(
-            hintText: hint,
-            border: InputBorder.none,
-            isDense: true,
-          ),
-        ),
-      ],
-    ),
-  );
-}
-
-// ---------- Intro Overlay เดิม ----------
 class _IntroSlide {
   final String title;
   final String desc;
@@ -748,13 +893,9 @@ class _IntroSlide {
 }
 
 class _IntroOverlay extends StatefulWidget {
-  final VoidCallback onSkip;
-  final VoidCallback onDone;
+  const _IntroOverlay({required this.onDone});
 
-  const _IntroOverlay({
-    required this.onSkip,
-    required this.onDone,
-  });
+  final VoidCallback onDone;
 
   @override
   State<_IntroOverlay> createState() => _IntroOverlayState();
@@ -767,131 +908,169 @@ class _IntroOverlayState extends State<_IntroOverlay> {
   final List<_IntroSlide> _slides = const [
     _IntroSlide(
       title: 'เพิ่มต้นส้มได้ทันที',
-      desc: 'กดปุ่ม + เพื่อเพิ่ม “ต้นที่ 1, 2, 3 …” อัตโนมัติ ไม่ต้องพิมพ์เอง',
+      desc: 'กดปุ่ม + เพื่อเพิ่ม “ต้นที่ 1, 2, 3 …” อัตโนมัติ\nไม่ต้องพิมพ์เอง',
       icon: Icons.add_circle_outline,
     ),
     _IntroSlide(
       title: 'เพิ่มหลายต้นในครั้งเดียว',
-      desc: 'ถ้ามีต้นเยอะ กด “เพิ่มหลายต้น” แล้วกรอกจำนวน ระบบจะสร้างรายการให้ทันที',
+      desc: 'ถ้ามีต้นเยอะ กด “เพิ่มหลายต้น” แล้วกรอกจำนวน\nระบบจะสร้างรายการให้ทันที',
       icon: Icons.playlist_add,
     ),
     _IntroSlide(
       title: 'ถ่ายรูปใบส้มเป็นรายต้น',
-      desc: 'แตะการ์ดต้นส้ม แล้วกด “ถ่ายรูปใบส้ม” เพื่อบันทึกผลสแกนลงต้นนั้น',
+      desc: 'แตะการ์ดต้นส้ม แล้วกด “ถ่ายรูปใบส้ม”\nเพื่อบันทึกผลสแกนลงต้นนั้น',
       icon: Icons.camera_alt_rounded,
     ),
   ];
 
-  @override
-  void dispose() {
-    _pageController.dispose();
-    super.dispose();
-  }
-
   void _next() {
     if (_index < _slides.length - 1) {
-      _pageController.nextPage(
-        duration: const Duration(milliseconds: 250),
+      final next = _index + 1;
+      _pageController.animateToPage(
+        next,
+        duration: const Duration(milliseconds: 260),
         curve: Curves.easeOut,
       );
+      setState(() => _index = next);
     } else {
       widget.onDone();
     }
   }
 
+  Widget _dots() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: List.generate(_slides.length, (i) {
+        final active = i == _index;
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          margin: const EdgeInsets.symmetric(horizontal: 4),
+          width: active ? 18 : 8,
+          height: 8,
+          decoration: BoxDecoration(
+            color: active ? kPrimaryGreen : Colors.black12,
+            borderRadius: BorderRadius.circular(10),
+          ),
+        );
+      }),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Container(
-      color: Colors.black.withOpacity(0.35),
-      child: Center(
-        child: Container(
-          width: 320,
-          padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(26),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withOpacity(0.2),
-                blurRadius: 18,
-                offset: const Offset(0, 10),
+    return Positioned.fill(
+      child: Material(
+        color: Colors.black54,
+        child: SafeArea(
+          child: Center(
+            child: Container(
+              width: 340,
+              margin: const EdgeInsets.symmetric(horizontal: 16),
+              padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(28),
               ),
-            ],
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Align(
-                alignment: Alignment.topRight,
-                child: GestureDetector(
-                  onTap: widget.onSkip,
-                  child: const Icon(Icons.close, size: 20),
-                ),
-              ),
-              SizedBox(
-                height: 180,
-                child: PageView.builder(
-                  controller: _pageController,
-                  itemCount: _slides.length,
-                  onPageChanged: (i) => setState(() => _index = i),
-                  itemBuilder: (_, i) {
-                    final s = _slides[i];
-                    return Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        CircleAvatar(
-                          radius: 26,
-                          backgroundColor: kPrimaryGreen.withOpacity(0.12),
-                          child: Icon(s.icon, color: kPrimaryGreen, size: 26),
-                        ),
-                        const SizedBox(height: 16),
-                        Text(
-                          s.title,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w700,
-                            color: Color(0xFF222222),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          s.desc,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            fontSize: 13,
-                            color: Color(0xFF6A6A6A),
-                            height: 1.4,
-                          ),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-              ),
-              const SizedBox(height: 12),
-              Row(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  TextButton(
-                    onPressed: widget.onSkip,
-                    child: const Text('ข้าม'),
-                  ),
-                  const Spacer(),
-                  ElevatedButton(
-                    onPressed: _next,
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: kPrimaryGreen,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(20),
+                  // Header (Icon)
+                  Container(
+                    width: 62,
+                    height: 62,
+                    decoration: const BoxDecoration(
+                      color: kCardBg,
+                      shape: BoxShape.circle,
+                    ),
+                    child: Center(
+                      child: Icon(
+                        _slides[_index].icon,
+                        color: kPrimaryGreen,
+                        size: 30,
                       ),
                     ),
-                    child: Text(_index == _slides.length - 1 ? 'เริ่มใช้งาน' : 'ถัดไป'),
+                  ),
+                  const SizedBox(height: 14),
+
+                  // Slides
+                  SizedBox(
+                    height: 150,
+                    child: PageView.builder(
+                      controller: _pageController,
+                      itemCount: _slides.length,
+                      onPageChanged: (i) => setState(() => _index = i),
+                      itemBuilder: (_, i) {
+                        final s = _slides[i];
+                        return Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              s.title,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                fontSize: 18.5,
+                                fontWeight: FontWeight.w800,
+                                color: kTextBrown,
+                              ),
+                            ),
+                            const SizedBox(height: 10),
+                            Text(
+                              s.desc,
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 13.5,
+                                height: 1.35,
+                                fontWeight: FontWeight.w500,
+                                color: Colors.black.withOpacity(0.62),
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                  ),
+
+                  const SizedBox(height: 6),
+                  _dots(),
+                  const SizedBox(height: 14),
+
+                  // Actions
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextButton(
+                          onPressed: widget.onDone,
+                          style: TextButton.styleFrom(
+                            foregroundColor: Colors.black54,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                          child: const Text(
+                            'ข้าม',
+                            style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: ElevatedButton(
+                          onPressed: _next,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: kPrimaryGreen,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                          ),
+                          child: Text(
+                            _index < _slides.length - 1 ? 'ถัดไป' : 'เริ่มใช้งาน',
+                            style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
-            ],
+            ),
           ),
         ),
       ),

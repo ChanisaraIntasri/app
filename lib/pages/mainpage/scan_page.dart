@@ -1,12 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
-
-import 'confirm_capture_page.dart';
-import 'disease.dart'; // ✅ Import ไฟล์ disease.dart
 
 const kPrimaryGreen = Color(0xFF005E33);
 
@@ -85,7 +83,8 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
       if (_cams.isEmpty) throw 'ไม่พบกล้องในอุปกรณ์';
 
       // default: กล้องหลัง
-      _index = _cams.indexWhere((c) => c.lensDirection == CameraLensDirection.back);
+      _index =
+          _cams.indexWhere((c) => c.lensDirection == CameraLensDirection.back);
       if (_index == -1) _index = 0;
 
       await _startSelected();
@@ -181,6 +180,73 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
     }
   }
 
+  // ===================== เลือกระดับความรุนแรง =====================
+  Future<String?> _pickSeverity() async {
+    return showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        Widget item({
+          required String title,
+          required String value,
+          required Color dotColor,
+        }) {
+          return ListTile(
+            leading: Container(
+              width: 12,
+              height: 12,
+              decoration: BoxDecoration(color: dotColor, shape: BoxShape.circle),
+            ),
+            title: Text(
+              title,
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+            onTap: () => Navigator.pop(ctx, value),
+          );
+        }
+
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 42,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.black12,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'เลือกระดับความรุนแรง',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                item(title: 'น้อย (Low)', value: 'low', dotColor: Colors.green),
+                item(
+                    title: 'ปานกลาง (Medium)',
+                    value: 'medium',
+                    dotColor: Colors.orange),
+                item(title: 'รุนแรง (High)', value: 'high', dotColor: Colors.red),
+                const SizedBox(height: 8),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+  // =================================================================
+
   Future<void> _capture() async {
     final cam = _ctrl;
     if (cam == null || !cam.value.isInitialized || _busy) return;
@@ -191,7 +257,7 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
       final shot = await cam.takePicture();
       if (!mounted) return;
 
-      // 2) ไปหน้า Confirm เพื่อดูรูปและกดยืนยัน/ยกเลิก
+      // 2) ยืนยันรูป (ไฟล์เดียวจบ)
       final useIt = await Navigator.push<bool>(
         context,
         MaterialPageRoute(
@@ -201,26 +267,41 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
 
       if (useIt != true || !mounted) return;
 
-      // 3) เลือกโรค และให้ disease.dart ส่งกลับด้วย Navigator.pop(context, 'ชื่อโรค')
+      // 3) เลือกโรค (ไฟล์เดียวจบ)
       final String? selectedDisease = await Navigator.of(context).push<String>(
-        MaterialPageRoute(builder: (_) => const DiseaseListScreen()),
+        MaterialPageRoute(builder: (_) => const DiseasePickerPage()),
       );
 
-      if (!mounted || selectedDisease == null || selectedDisease.trim().isEmpty) return;
+      if (!mounted ||
+          selectedDisease == null ||
+          selectedDisease.trim().isEmpty) return;
+
+      // 4) เลือกระดับความรุนแรง
+      final String? severity = await _pickSeverity();
+      if (!mounted || severity == null || severity.trim().isEmpty) return;
+
+      // 5) วันตรวจพบโรค = ตอนสแกน
+      final diagnosedAt = DateTime.now();
 
       // ✅ ถ้าเปิดมาจากต้นส้ม -> ส่งผลกลับไปให้ SharePage บันทึกลงต้นนั้น
       if (widget.treeId != null) {
         Navigator.pop(context, {
           'disease': selectedDisease.trim(),
+          'severity': severity.trim(),
           'imagePath': shot.path,
-          'scannedAt': DateTime.now().toIso8601String(),
+          'scannedAt': diagnosedAt.toIso8601String(),
+          'diagnosedAt': diagnosedAt.toIso8601String(),
         });
         return;
       }
 
-      // ถ้าเปิดจากแท็บกล้องเฉย ๆ ก็ไม่ต้อง pop (ตามพฤติกรรมเดิม)
+      // ถ้าเปิดจากแท็บกล้องเฉย ๆ
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('ได้ผลสแกน: ${selectedDisease.trim()}')),
+        SnackBar(
+          content: Text(
+            'ได้ผลสแกน: ${selectedDisease.trim()} (severity: ${severity.trim()})',
+          ),
+        ),
       );
     } catch (e) {
       if (mounted) {
@@ -336,14 +417,13 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
 
               return Stack(
                 children: [
-                  // ✅ กล้อง + gesture เหมือนกล้องจริง (แตะโฟกัส + pinch zoom)
+                  // ✅ กล้อง + gesture (แตะโฟกัส + pinch zoom)
                   Positioned.fill(
                     child: GestureDetector(
                       behavior: HitTestBehavior.opaque,
                       onTapDown: (d) => _onTapToFocus(d, viewSize),
                       onScaleStart: (_) => _baseZoom = _zoom,
                       onScaleUpdate: (d) {
-                        // pinch zoom
                         if (_maxZoom <= _minZoom) return;
                         final next = _baseZoom * d.scale;
                         _setZoom(next);
@@ -385,10 +465,11 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
                       ),
                     ),
 
-                  // ✅ Top bar เหมือนกล้องจริง
+                  // ✅ Top bar
                   SafeArea(
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 10),
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
@@ -399,7 +480,9 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
                           Row(
                             children: [
                               _TopIconButton(
-                                icon: _flash ? Icons.flash_on_rounded : Icons.flash_off_rounded,
+                                icon: _flash
+                                    ? Icons.flash_on_rounded
+                                    : Icons.flash_off_rounded,
                                 onTap: _toggleFlash,
                               ),
                               const SizedBox(width: 10),
@@ -414,7 +497,7 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
                     ),
                   ),
 
-                  // ✅ Bottom controls เหมือนกล้องจริง
+                  // ✅ Bottom controls
                   Align(
                     alignment: Alignment.bottomCenter,
                     child: Container(
@@ -439,7 +522,6 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          // ข้อความสั้น ๆ (ไม่บังเหมือนเดิม)
                           const Text(
                             'นำ “ใบส้ม 1 ใบ” ให้อยู่ในกรอบใบไม้',
                             style: TextStyle(
@@ -449,24 +531,25 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
                             ),
                           ),
                           const SizedBox(height: 10),
-
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              // ซูมแสดง (เล็ก ๆ)
+                              // ซูมแสดง
                               Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 10, vertical: 6),
                                 decoration: BoxDecoration(
                                   color: Colors.white.withOpacity(0.12),
                                   borderRadius: BorderRadius.circular(14),
                                 ),
                                 child: Text(
                                   '${_zoom.toStringAsFixed(1)}x',
-                                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                                  style: const TextStyle(
+                                      color: Colors.white, fontSize: 12),
                                 ),
                               ),
 
-                              // ✅ ปุ่มชัตเตอร์วงกลมแบบกล้องจริง
+                              // ปุ่มชัตเตอร์
                               GestureDetector(
                                 onTap: _busy ? null : _capture,
                                 child: Container(
@@ -474,21 +557,23 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
                                   height: 78,
                                   decoration: BoxDecoration(
                                     shape: BoxShape.circle,
-                                    border: Border.all(color: Colors.white, width: 5),
+                                    border: Border.all(
+                                        color: Colors.white, width: 5),
                                   ),
                                   child: Padding(
                                     padding: const EdgeInsets.all(6),
                                     child: Container(
                                       decoration: BoxDecoration(
                                         shape: BoxShape.circle,
-                                        color: _busy ? Colors.white38 : kPrimaryGreen,
+                                        color: _busy
+                                            ? Colors.white38
+                                            : kPrimaryGreen,
                                       ),
                                     ),
                                   ),
                                 ),
                               ),
 
-                              // ช่องว่างให้สมดุล
                               const SizedBox(width: 48),
                             ],
                           ),
@@ -573,7 +658,7 @@ class _LeafOutlinePainter extends CustomPainter {
 
     canvas.drawPath(midPath, midrib);
 
-    // เส้นแขนงเล็ก ๆ (ให้ดูเป็นใบไม้จริงขึ้น)
+    // เส้นแขนงเล็ก ๆ
     final vein = Paint()
       ..color = Colors.white.withOpacity(0.35)
       ..style = PaintingStyle.stroke
@@ -629,6 +714,175 @@ class _TopIconButton extends StatelessWidget {
           borderRadius: BorderRadius.circular(22),
         ),
         child: Icon(icon, color: Colors.white),
+      ),
+    );
+  }
+}
+
+// ================== Embedded Pages (ไม่ต้องแยกไฟล์) ==================
+
+class ConfirmCapturePage extends StatelessWidget {
+  final String imagePath;
+
+  const ConfirmCapturePage({super.key, required this.imagePath});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        title: const Text('ยืนยันรูป (Confirm)'),
+      ),
+      body: SafeArea(
+        child: Column(
+          children: [
+            Expanded(
+              child: Center(
+                child: Image.file(
+                  File(imagePath),
+                  fit: BoxFit.contain,
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 18),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        side: BorderSide(color: Colors.white.withOpacity(0.35)),
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                      ),
+                      onPressed: () => Navigator.pop(context, false),
+                      child: const Text('ถ่ายใหม่ (Retake)'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: kPrimaryGreen,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                      ),
+                      onPressed: () => Navigator.pop(context, true),
+                      child: const Text('ใช้รูปนี้ (Use)'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class DiseasePickerPage extends StatefulWidget {
+  const DiseasePickerPage({super.key});
+
+  @override
+  State<DiseasePickerPage> createState() => _DiseasePickerPageState();
+}
+
+class _DiseasePickerPageState extends State<DiseasePickerPage> {
+  final _q = TextEditingController();
+
+  // ✅ ใส่รายการโรคเบื้องต้น (แก้/เพิ่มได้ภายหลัง หรือจะดึงจาก API ก็ได้)
+  final List<String> _all = const [
+    'แคงเกอร์ (Canker)',
+    'ราดำ (Sooty mold)',
+    'ใบจุดดำ (Black spot)',
+    'ใบไหม้/ใบแห้ง (Leaf blight)',
+    'โรคราแป้ง (Powdery mildew)',
+    'ขาดธาตุอาหาร (Nutrient deficiency)',
+    'อื่น ๆ (Other)',
+  ];
+
+  @override
+  void dispose() {
+    _q.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final query = _q.text.trim().toLowerCase();
+    final list = query.isEmpty
+        ? _all
+        : _all.where((x) => x.toLowerCase().contains(query)).toList();
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('เลือกโรค (Select disease)'),
+      ),
+      body: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
+              child: TextField(
+                controller: _q,
+                onChanged: (_) => setState(() {}),
+                decoration: InputDecoration(
+                  hintText: 'ค้นหา/พิมพ์ชื่อโรค (Search / type)',
+                  prefixIcon: const Icon(Icons.search),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
+              ),
+            ),
+
+            // ✅ ถ้าพิมพ์ชื่อเอง ให้เลือกได้ทันที
+            if (_q.text.trim().isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: kPrimaryGreen,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                    onPressed: () =>
+                        Navigator.pop(context, _q.text.trim()),
+                    child: Text('ใช้: "${_q.text.trim()}"'),
+                  ),
+                ),
+              ),
+
+            Expanded(
+              child: ListView.separated(
+                itemCount: list.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (context, i) {
+                  final item = list[i];
+                  return ListTile(
+                    title: Text(item),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => Navigator.pop(context, item),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

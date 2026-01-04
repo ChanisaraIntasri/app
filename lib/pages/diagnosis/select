@@ -1,0 +1,280 @@
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+
+const kPrimaryGreen = Color(0xFF005E33);
+const kPageBg = Color.fromARGB(255, 255, 255, 255);
+
+const String API_BASE = String.fromEnvironment(
+  'API_BASE',
+  defaultValue: 'https://latricia-nonodoriferous-snoopily.ngrok-free.dev/crud/api',
+);
+
+String _joinApi(String base, String path) {
+  final b = base.endsWith('/') ? base.substring(0, base.length - 1) : base;
+  final p = path.startsWith('/') ? path : '/$path';
+  return '$b$p';
+}
+
+String _s(dynamic v) => v == null ? '' : v.toString().trim();
+
+class _DiseaseItem {
+  final String id;
+  final String th;
+  final String en;
+
+  const _DiseaseItem({required this.id, required this.th, required this.en});
+
+  String get displayTh => th.isNotEmpty ? th : en;
+  String get displayEn => en.isNotEmpty ? en : th;
+
+  factory _DiseaseItem.fromMap(Map<String, dynamic> m) {
+    return _DiseaseItem(
+      id: _s(m['disease_id'] ?? m['id']),
+      th: _s(m['disease_th'] ?? m['name_th'] ?? m['diseaseNameTh']),
+      en: _s(m['disease_en'] ?? m['name_en'] ?? m['diseaseNameEn']),
+    );
+  }
+}
+
+/// หน้าเลือกโรค (แสดงเต็มหน้า ไม่ใช่บล็อก)
+///
+/// ใช้ได้ 2 แบบ
+/// 1) เปิดเป็นหน้าเต็ม: Navigator.push(... DiseaseSelectPage())
+/// 2) เรียกแบบ pick เพื่อรอค่าที่เลือก: DiseaseSelectPage.pick(context)
+class DiseaseSelectPage extends StatefulWidget {
+  final bool fetchFromApi;
+
+  const DiseaseSelectPage({super.key, this.fetchFromApi = true});
+
+  /// คืนค่า Map ที่มีอย่างน้อย: disease_id, disease_name (+ disease_th, disease_en)
+  static Future<Map<String, dynamic>?> pick(
+    BuildContext context, {
+    bool fetchFromApi = true,
+  }) {
+    return Navigator.push<Map<String, dynamic>?>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DiseaseSelectPage(fetchFromApi: fetchFromApi),
+      ),
+    );
+  }
+
+  @override
+  State<DiseaseSelectPage> createState() => _DiseaseSelectPageState();
+}
+
+class _DiseaseSelectPageState extends State<DiseaseSelectPage> {
+  bool loading = false;
+  String error = '';
+
+  List<_DiseaseItem> items = const [];
+  String q = '';
+
+  Future<String?> _readToken() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('token') ??
+        prefs.getString('access_token') ??
+        prefs.getString('auth_token');
+  }
+
+  Map<String, String> _headers(String? token) => {
+        'Accept': 'application/json',
+        if (token != null && token.trim().isNotEmpty)
+          'Authorization': 'Bearer ${token.trim()}',
+      };
+
+  List<dynamic> _extractList(dynamic decoded) {
+    if (decoded is List) return decoded;
+    if (decoded is Map) {
+      final d = decoded['data'];
+      if (d is List) return d;
+      final items = decoded['items'];
+      if (items is List) return items;
+    }
+    return const [];
+  }
+
+  Future<void> _load() async {
+    if (!widget.fetchFromApi) return;
+
+    setState(() {
+      loading = true;
+      error = '';
+    });
+
+    try {
+      final token = await _readToken();
+      final url = Uri.parse(_joinApi(API_BASE, '/diseases/read_diseases.php'));
+
+      final res = await http
+          .get(url, headers: _headers(token))
+          .timeout(const Duration(seconds: 12));
+
+      final decoded = jsonDecode(res.body);
+      if (decoded is Map && decoded['ok'] != true) {
+        throw Exception(_s(decoded['message'] ?? decoded['error'] ?? 'read_failed'));
+      }
+
+      final list = _extractList(decoded)
+          .whereType<Map>()
+          .map((e) => _DiseaseItem.fromMap(Map<String, dynamic>.from(e)))
+          .where((x) => x.id.isNotEmpty)
+          .toList();
+
+      list.sort((a, b) => a.displayTh.compareTo(b.displayTh));
+
+      if (!mounted) return;
+      setState(() {
+        items = list;
+        loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        error = 'โหลดรายชื่อโรคไม่สำเร็จ: $e';
+        loading = false;
+      });
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  List<_DiseaseItem> get filtered {
+    final key = q.trim().toLowerCase();
+    if (key.isEmpty) return items;
+    return items.where((d) {
+      final th = d.th.toLowerCase();
+      final en = d.en.toLowerCase();
+      return th.contains(key) || en.contains(key) || d.id.contains(key);
+    }).toList();
+  }
+
+  void _select(_DiseaseItem d) {
+    Navigator.pop(context, {
+      'disease_id': d.id,
+      // ใช้ชื่อไทยเป็นหลัก ถ้าไม่มีค่อย fallback เป็นอังกฤษ
+      'disease_name': d.displayTh,
+      'disease_th': d.th,
+      'disease_en': d.en,
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: kPageBg,
+      appBar: AppBar(
+        backgroundColor: kPrimaryGreen,
+        foregroundColor: Colors.white,
+        title: const Text('เลือกโรค'),
+        actions: [
+          IconButton(
+            onPressed: loading ? null : _load,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 10),
+            child: TextField(
+              decoration: InputDecoration(
+                hintText: 'ค้นหา (ชื่อโรค/รหัส)',
+                prefixIcon: const Icon(Icons.search),
+                filled: true,
+                fillColor: Colors.white,
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+              ),
+              onChanged: (v) => setState(() => q = v),
+            ),
+          ),
+          if (error.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+              child: Text(
+                error,
+                style: const TextStyle(color: Colors.red, fontWeight: FontWeight.w700),
+              ),
+            ),
+          Expanded(
+            child: loading
+                ? const Center(child: CircularProgressIndicator())
+                : (filtered.isEmpty
+                    ? const Center(child: Text('ไม่พบข้อมูลโรค'))
+                    : ListView.separated(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                        itemCount: filtered.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 10),
+                        itemBuilder: (_, i) {
+                          final d = filtered[i];
+                          final th = d.th;
+                          final en = d.en;
+                          return InkWell(
+                            borderRadius: BorderRadius.circular(16),
+                            onTap: () => _select(d),
+                            child: Container(
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(color: const Color(0xFFE7E7E7)),
+                              ),
+                              child: Row(
+                                children: [
+                                  Container(
+                                    width: 40,
+                                    height: 40,
+                                    alignment: Alignment.center,
+                                    decoration: BoxDecoration(
+                                      color: kPrimaryGreen.withOpacity(0.10),
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: const Icon(Icons.local_florist, color: kPrimaryGreen),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          th.isNotEmpty ? th : (en.isNotEmpty ? en : 'โรค #${d.id}'),
+                                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w900),
+                                        ),
+                                        if (th.isNotEmpty && en.isNotEmpty) ...[
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            en,
+                                            style: const TextStyle(color: Colors.black54, fontWeight: FontWeight.w600),
+                                          ),
+                                        ],
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          'ID: ${d.id}',
+                                          style: const TextStyle(color: Colors.black45),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const Icon(Icons.chevron_right, color: Colors.black38),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      )),
+          ),
+        ],
+      ),
+    );
+  }
+}

@@ -107,7 +107,7 @@ class _MainNavState extends State<MainNav> {
             pageTransitionAnimation: PageTransitionAnimation.cupertino,
           );
 
-          // ✅ กลับมาแล้วให้ชี้ไป Home (ไอคอน Home + หน้า Home)
+          
           _controller.index = 0;
           setState(() {});
         } else {

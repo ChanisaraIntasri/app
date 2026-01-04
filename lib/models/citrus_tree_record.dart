@@ -10,14 +10,35 @@ String dateKey(DateTime d) {
 @immutable
 class TreeScanItem {
   final String disease;
+
+  // ✅ NEW: ระดับความรุนแรงของ “ผลสแกนครั้งนั้น”
+  // แนะนำให้เก็บเป็น string เช่น "low", "medium", "high"
+  // หรือ "1", "2", "3" ก็ได้ (ตามที่คุณใช้ในระบบ)
+  final String severity;
+
   final DateTime scannedAt;
   final String? imagePath;
 
   const TreeScanItem({
     required this.disease,
+    this.severity = 'unknown', // ✅ NEW: default เพื่อไม่ให้โค้ดเดิมพัง
     required this.scannedAt,
     this.imagePath,
   });
+
+  TreeScanItem copyWith({
+    String? disease,
+    String? severity,
+    DateTime? scannedAt,
+    String? imagePath,
+  }) {
+    return TreeScanItem(
+      disease: disease ?? this.disease,
+      severity: severity ?? this.severity,
+      scannedAt: scannedAt ?? this.scannedAt,
+      imagePath: imagePath ?? this.imagePath,
+    );
+  }
 }
 
 @immutable
@@ -30,6 +51,15 @@ class CitrusTreeRecord {
 
   /// ผลสแกนล่าสุด
   final String disease;
+
+  // ✅ NEW: ระดับความรุนแรงของ “ผลสแกนล่าสุด”
+  // ใช้ร่วมกับ disease เพื่อ grouping: "โรคเดียวกัน + severity เท่ากัน"
+  final String severity;
+
+  // ✅ NEW: วันตรวจพบโรค (diagnosed date)
+  // ตาม requirement ของคุณ: "เริ่มนับวันรักษา" ใช้วันตรวจพบโรค
+  // ถ้ายังไม่ set สามารถ fallback ไปใช้ lastScanAt ได้ตอนคำนวณ
+  final DateTime? diagnosedAt;
 
   /// คำแนะนำการรักษา (ผู้ใช้กรอก/แก้ได้)
   final String recommendation;
@@ -49,6 +79,10 @@ class CitrusTreeRecord {
   final int treatmentEveryDays;
   final DateTime treatmentStartDate;
 
+  // ✅ NEW: จำนวน “ครั้ง” ที่ต้องรักษา (เช่น 4 ครั้ง)
+  // ถ้า = 0 แปลว่า "ไม่จำกัด/ยังไม่กำหนด" (ไว้กันโค้ดเดิมพัง)
+  final int treatmentTotalTimes;
+
   /// เก็บวันที่ทำแล้วเป็น key "yyyy-MM-dd"
   final Set<String> treatmentDoneDates;
 
@@ -57,6 +91,10 @@ class CitrusTreeRecord {
     required this.name,
     required this.plot,
     required this.disease,
+
+    this.severity = 'unknown', // ✅ NEW
+    this.diagnosedAt,          // ✅ NEW
+
     required this.recommendation,
     required this.note,
     required this.createdAt,
@@ -66,6 +104,9 @@ class CitrusTreeRecord {
     required this.treatmentTaskName,
     required this.treatmentEveryDays,
     required this.treatmentStartDate,
+
+    this.treatmentTotalTimes = 0, // ✅ NEW
+
     required this.treatmentDoneDates,
   });
 
@@ -74,6 +115,11 @@ class CitrusTreeRecord {
     String? name,
     String? plot,
     String? disease,
+
+    String? severity,          // ✅ NEW
+    DateTime? diagnosedAt,     // ✅ NEW (ตั้งค่าเป็นค่าใหม่ได้)
+    bool clearDiagnosedAt = false, // ✅ NEW (ถ้าอยากล้างค่า)
+
     String? recommendation,
     String? note,
     DateTime? createdAt,
@@ -83,6 +129,9 @@ class CitrusTreeRecord {
     String? treatmentTaskName,
     int? treatmentEveryDays,
     DateTime? treatmentStartDate,
+
+    int? treatmentTotalTimes,  // ✅ NEW
+
     Set<String>? treatmentDoneDates,
   }) {
     return CitrusTreeRecord(
@@ -90,6 +139,10 @@ class CitrusTreeRecord {
       name: name ?? this.name,
       plot: plot ?? this.plot,
       disease: disease ?? this.disease,
+
+      severity: severity ?? this.severity,
+      diagnosedAt: clearDiagnosedAt ? null : (diagnosedAt ?? this.diagnosedAt),
+
       recommendation: recommendation ?? this.recommendation,
       note: note ?? this.note,
       createdAt: createdAt ?? this.createdAt,
@@ -99,7 +152,18 @@ class CitrusTreeRecord {
       treatmentTaskName: treatmentTaskName ?? this.treatmentTaskName,
       treatmentEveryDays: treatmentEveryDays ?? this.treatmentEveryDays,
       treatmentStartDate: treatmentStartDate ?? this.treatmentStartDate,
-      treatmentDoneDates: treatmentDoneDates ?? Set<String>.from(this.treatmentDoneDates),
+
+      treatmentTotalTimes: treatmentTotalTimes ?? this.treatmentTotalTimes,
+
+      treatmentDoneDates:
+          treatmentDoneDates ?? Set<String>.from(this.treatmentDoneDates),
     );
   }
+
+  // ✅ NEW: helper key สำหรับ grouping (โรคเดียวกัน + severity เท่ากัน)
+  String get diseaseSeverityKey => '${disease.trim()}__${severity.trim()}';
+
+  // ✅ NEW: วันเริ่มนับตาม requirement (diagnosedAt เป็นหลัก)
+  DateTime get diagnosedDateForPlan =>
+      diagnosedAt ?? lastScanAt ?? createdAt;
 }
