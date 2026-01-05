@@ -28,6 +28,73 @@ double _toDouble(dynamic v, [double fallback = 0]) {
   return double.tryParse(s) ?? fallback;
 }
 
+int _toInt(dynamic v, [int fallback = 0]) {
+  if (v == null) return fallback;
+  if (v is int) return v;
+  if (v is num) return v.toInt();
+  final s = v.toString().trim();
+  return int.tryParse(s) ?? fallback;
+}
+
+String _normKey(String s) => s.trim().toLowerCase();
+
+String _severityToCode(String s) {
+  final t = _normKey(s);
+  // รองรับทั้งไทย/อังกฤษแบบที่พบบ่อย
+  if (t.contains('high') || t.contains('สูง') || t.contains('รุนแรง')) return 'high';
+  if (t.contains('medium') || t.contains('กลาง') || t.contains('ปานกลาง')) return 'medium';
+  if (t.contains('low') || t.contains('ต่ำ') || t.contains('น้อย')) return 'low';
+  return t;
+}
+
+Future<void> _cacheTreatmentPlanOverride({
+  required String diseaseName,
+  required String severityName,
+  required int everyDays,
+  required int totalTimes,
+  String taskName = 'พ่นยา',
+}) async {
+  if (everyDays <= 0 || totalTimes <= 0) return;
+
+  final prefs = await SharedPreferences.getInstance();
+  const storageKey = 'treatment_plan_overrides_v1';
+
+  Map<String, dynamic> root = {};
+  final raw = prefs.getString(storageKey);
+  if (raw != null && raw.trim().isNotEmpty) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        root = Map<String, dynamic>.from(decoded);
+      }
+    } catch (_) {}
+  }
+
+  final diseaseK = _normKey(diseaseName);
+  final sevK1 = _normKey(severityName);
+  final sevK2 = _severityToCode(severityName);
+
+  // เก็บหลายคีย์กันพลาด (กรณี severity ใน Share เป็นไทย/อังกฤษไม่ตรงกัน)
+  final keys = <String>{
+    '${diseaseK}__${sevK1}',
+    '${diseaseK}__${sevK2}',
+  };
+
+  final payload = {
+    'everyDays': everyDays,
+    'totalTimes': totalTimes,
+    'taskName': taskName,
+    'savedAt': DateTime.now().toIso8601String(),
+  };
+
+  for (final k in keys) {
+    root[k] = payload;
+  }
+
+  await prefs.setString(storageKey, jsonEncode(root));
+}
+
+
 class _Choice {
   final String id;
   final String label;
@@ -371,9 +438,9 @@ class _DiseaseQuestionsPageState extends State<DiseaseQuestionsPage> {
     return [];
   }
 
-  Map<String, String> _pickRiskLevel(double total, List<Map<String, dynamic>> levels) {
+  Map<String, dynamic> _pickRiskLevel(double total, List<Map<String, dynamic>> levels) {
     if (levels.isEmpty) {
-      return {'id': '', 'name': 'ไม่พบระดับความรุนแรง'};
+      return {'id': '', 'name': 'ไม่พบระดับความรุนแรง', 'days': 0, 'times': 0, 'code': ''};
     }
 
     double minOf(Map<String, dynamic> m) => _toDouble(
@@ -387,42 +454,66 @@ class _DiseaseQuestionsPageState extends State<DiseaseQuestionsPage> {
       return _toDouble(raw, -1);
     }
 
+    int daysOf(Map<String, dynamic> m) => _toInt(
+          m['days'] ?? m['every_days'] ?? m['interval_days'] ?? m['treatment_every_days'] ?? 0,
+          0,
+        );
+
+    int timesOf(Map<String, dynamic> m) => _toInt(
+          m['times'] ?? m['total_times'] ?? m['count'] ?? m['treatment_total_times'] ?? 0,
+          0,
+        );
+
     String idOf(Map<String, dynamic> m) => _s(m['risk_level_id'] ?? m['level_id'] ?? m['id']);
+
+    String codeOf(Map<String, dynamic> m) =>
+        _s(m['level_code'] ?? m['code'] ?? m['severity_code'] ?? '');
 
     String nameOf(Map<String, dynamic> m) {
       final n = _s(m['risk_level_name'] ??
           m['level_name'] ??
           m['name'] ??
           m['title'] ??
-          m['severity_name']);
-      final fallback = _s(m['risk_level'] ?? m['severity'] ?? m['level']);
+          m['severity_name'] ??
+          m['level_code']); // ✅ รองรับกรณี API ส่งมาเป็น level_code
+      final fallback = _s(m['risk_level'] ?? m['severity'] ?? m['level'] ?? m['level_code']);
       return n.isNotEmpty ? n : (fallback.isNotEmpty ? fallback : 'ระดับความรุนแรง');
     }
 
     final list = levels.toList()..sort((a, b) => minOf(a).compareTo(minOf(b)));
 
+    // 1) ถ้ามี max_score → match ช่วงคะแนน
     for (final r in list) {
       final mn = minOf(r);
       final mx = maxOf(r);
       if (mx >= 0) {
         if (total >= mn && total <= mx) {
-          return {'id': idOf(r), 'name': nameOf(r)};
+          return {
+            'id': idOf(r),
+            'name': nameOf(r),
+            'days': daysOf(r),
+            'times': timesOf(r),
+            'code': codeOf(r),
+          };
         }
       }
     }
 
+    // 2) ถ้าไม่มี max_score → เลือกตัวที่ min_score <= total ที่ “มากที่สุด”
     Map<String, dynamic>? best;
-    double bestMin = -1e18;
     for (final r in list) {
       final mn = minOf(r);
-      if (mn <= total && mn >= bestMin) {
-        bestMin = mn;
-        best = r;
-      }
+      if (total >= mn) best = r;
     }
-
     best ??= list.first;
-    return {'id': idOf(best), 'name': nameOf(best)};
+
+    return {
+      'id': idOf(best),
+      'name': nameOf(best),
+      'days': daysOf(best),
+      'times': timesOf(best),
+      'code': codeOf(best),
+    };
   }
 
   Future<List<String>> _fetchAdvice(String? token, String riskLevelId) async {
@@ -478,6 +569,62 @@ class _DiseaseQuestionsPageState extends State<DiseaseQuestionsPage> {
       if (advice.isNotEmpty) out.add(advice);
     }
     return out;
+  }
+
+
+  /// ✅ ดึง treatment_id (เพื่อบันทึกลง care_reminders)
+  /// - คืนค่า id แรกที่ match (disease_id + risk_level_id)
+  Future<int?> _fetchTreatmentId(String? token, String riskLevelId) async {
+    final did = Uri.encodeComponent(widget.diseaseId);
+    final rid = Uri.encodeComponent(riskLevelId);
+
+    final paths = <String>[
+      '/treatments/read_treatments.php?disease_id=$did&risk_level_id=$rid',
+      '/treatments/search_treatments.php?disease_id=$did&risk_level_id=$rid',
+      '/treatments/read_treatments.php?disease_id=$did',
+      '/treatments/search_treatments.php?disease_id=$did',
+      '/treatments/read_treatments.php',
+      '/treatments/search_treatments.php',
+    ];
+
+    List<Map<String, dynamic>> list = [];
+    for (final p in paths) {
+      try {
+        final url = Uri.parse(_joinApi(API_BASE, p));
+        final res = await http
+            .get(url, headers: _headers(token))
+            .timeout(const Duration(seconds: 12));
+        if (res.statusCode != 200) continue;
+
+        final decoded = jsonDecode(res.body);
+        final errMsg = _extractErr(decoded);
+        if (errMsg.isNotEmpty) continue;
+
+        list = _extractList(decoded)
+            .whereType<Map>()
+            .map((e) => Map<String, dynamic>.from(e))
+            .toList();
+
+        if (list.isNotEmpty) break;
+      } catch (_) {}
+    }
+
+    // filter ให้ตรงโรค + ระดับ (ถ้ามี)
+    final filtered = list.where((x) {
+      final did2 = _s(x['disease_id'] ?? x['diseaseId']);
+      final rid2 = _s(x['risk_level_id'] ?? x['level_id'] ?? x['riskLevelId']);
+      final didOk = did2.isEmpty || did2 == widget.diseaseId;
+      final ridOk = riskLevelId.isEmpty || rid2.isEmpty || rid2 == riskLevelId;
+      return didOk && ridOk;
+    }).toList();
+
+    final src = filtered.isNotEmpty ? filtered : list;
+    for (final m in src) {
+      final raw = m['treatment_id'] ?? m['treatmentId'] ?? m['id'];
+      final id = int.tryParse(raw?.toString() ?? '');
+      if (id != null) return id;
+    }
+    return null;
   }
 
   Future<Map<String, dynamic>> _createDiagnosisHistory(
@@ -550,15 +697,42 @@ class _DiseaseQuestionsPageState extends State<DiseaseQuestionsPage> {
     setState(() => _submitting = true);
 
     try {
+      int? diagnosisHistoryId;
       final token = await _readToken();
       final tkn = (token ?? '').trim();
 
       final levels = await _fetchRiskLevels(tkn.isEmpty ? null : tkn);
       final picked = _pickRiskLevel(total, levels);
-      final riskLevelId = (picked['id'] ?? '').toString();
-      final riskLevelName = (picked['name'] ?? '').toString();
 
-      // ✅ POST บันทึก diagnosis_history
+      final riskLevelId = _s(picked['id']);
+      final riskLevelCode = _s(picked['code']);
+      final riskLevelName =
+          (_s(picked['name']).isNotEmpty ? _s(picked['name']) : riskLevelCode);
+
+      final planEveryDays = _toInt(picked['days']);
+      final planTotalTimes = _toInt(picked['times']);
+
+      // ✅ แคชแผนการรักษาไว้ให้หน้า Home ใช้ (เก็บทั้ง "ชื่อระดับ" และ "code")
+      await _cacheTreatmentPlanOverride(
+        diseaseName: widget.diseaseName,
+        severityName: riskLevelName,
+        everyDays: planEveryDays,
+        totalTimes: planTotalTimes,
+        taskName: 'พ่นยา',
+      );
+
+      if (riskLevelCode.isNotEmpty &&
+          _normKey(riskLevelCode) != _normKey(riskLevelName)) {
+        await _cacheTreatmentPlanOverride(
+          diseaseName: widget.diseaseName,
+          severityName: riskLevelCode,
+          everyDays: planEveryDays,
+          totalTimes: planTotalTimes,
+          taskName: 'พ่นยา',
+        );
+      }
+
+// ✅ POST บันทึก diagnosis_history
       String saveNote = '';
       final treeIdInt = int.tryParse(widget.treeId) ?? 0;
       final diseaseIdInt = int.tryParse(widget.diseaseId) ?? 0;
@@ -597,9 +771,29 @@ class _DiseaseQuestionsPageState extends State<DiseaseQuestionsPage> {
         debugPrint(
           "create_diagnosis_history status=${r['_http_status']} ok=${r['ok']} message=${r['message']}",
         );
+
+        // ✅ ดึง diagnosis_history_id จาก response (ถ้ามี)
+        try {
+          final data = r['data'];
+          if (data is Map) {
+            diagnosisHistoryId = int.tryParse(
+              '${data['diagnosis_history_id'] ?? data['id'] ?? data['insert_id'] ?? ''}',
+            );
+          }
+          diagnosisHistoryId ??= int.tryParse(
+            '${r['diagnosis_history_id'] ?? r['id'] ?? r['insert_id'] ?? ''}',
+          );
+        } catch (_) {}
+
       }
 
       final adviceList = await _fetchAdvice(tkn.isEmpty ? null : tkn, riskLevelId);
+
+      // ✅ หา treatment_id ที่ match (ถ้ามี)
+      final int? treatmentId = await _fetchTreatmentId(
+        tkn.isEmpty ? null : tkn,
+        riskLevelId,
+      );
 
       if (!mounted) return;
 
@@ -610,6 +804,8 @@ class _DiseaseQuestionsPageState extends State<DiseaseQuestionsPage> {
             treeId: widget.treeId,
             diseaseId: widget.diseaseId,
             diseaseName: widget.diseaseName,
+            diagnosisHistoryId: diagnosisHistoryId,
+            treatmentId: treatmentId,
             totalScore: total,
             riskLevelId: riskLevelId.isEmpty ? '-' : riskLevelId,
             riskLevelName:

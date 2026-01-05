@@ -1,386 +1,459 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:table_calendar/table_calendar.dart';
 
-// ✅ model
+// ยัง keep ไว้ตามโปรเจกต์เดิม (ไม่เปลี่ยน UI)
 import 'package:flutter_application_1/models/citrus_tree_record.dart';
 
+const kBg = Color.fromARGB(255, 255, 255, 255);
 const kPrimaryGreen = Color(0xFF005E33);
-const kPageBg = Color.fromARGB(255, 251, 251, 251);
-const kCalendarCardBg = Colors.white;
+const kCardBg = Color(0xFFEDEDED);
 
-/// key "yyyy-MM-dd"
-String _dateKey(DateTime d) {
-  final y = d.year.toString().padLeft(4, '0');
-  final m = d.month.toString().padLeft(2, '0');
-  final day = d.day.toString().padLeft(2, '0');
-  return '$y-$m-$day';
+/// ปรับตามโปรเจกต์ของคุณได้ (หรือใช้ --dart-define=API_BASE=...)
+/// ตัวอย่าง: https://xxxx.ngrok-free.dev/crud/api
+const String API_BASE = String.fromEnvironment(
+  'API_BASE',
+  defaultValue: 'https://latricia-nonodoriferous-snoopily.ngrok-free.dev/crud/api',
+);
+
+String _joinApi(String base, String path) {
+  final b = base.endsWith('/') ? base.substring(0, base.length - 1) : base;
+  final p = path.startsWith('/') ? path : '/$path';
+  return '$b$p';
+}
+
+String _s(dynamic v) => (v ?? '').toString().trim();
+
+int _toInt(dynamic v, [int fallback = 0]) {
+  if (v == null) return fallback;
+  if (v is int) return v;
+  if (v is num) return v.toInt();
+  return int.tryParse(v.toString()) ?? fallback;
 }
 
 DateTime _dateOnly(DateTime d) => DateTime(d.year, d.month, d.day);
 
-DateTime _diagnosedAt(CitrusTreeRecord t) =>
-    t.diagnosedAt ?? t.lastScanAt ?? t.createdAt;
+String _ymd(DateTime d) =>
+    '${d.year.toString().padLeft(4, '0')}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
 
-/// 1 กลุ่ม = โรคเดียวกัน + severity เท่ากัน
-class _Group {
-  final String key; // disease__severity
-  final String disease;
-  final String severity;
-  final String taskName;
-  final int everyDays;
-  final int totalTimes;
-  final DateTime startDate;
-  final List<CitrusTreeRecord> trees;
-
-  const _Group({
-    required this.key,
-    required this.disease,
-    required this.severity,
-    required this.taskName,
-    required this.everyDays,
-    required this.totalTimes,
-    required this.startDate,
-    required this.trees,
-  });
-}
-
-/// งานใน "วันหนึ่ง"
-class _DueItem {
-  final DateTime date;
-  final _Group group;
-
-  const _DueItem({required this.date, required this.group});
-
-  bool isDoneAllTrees() {
-    final k = _dateKey(date);
-    return group.trees.every((t) => t.treatmentDoneDates.contains(k));
-  }
-}
-
+/// หน้าหลัก (Home)
 class HomePage extends StatefulWidget {
-  final List<CitrusTreeRecord>? trees;
+  final List<CitrusTreeRecord> trees;
   final ValueChanged<List<CitrusTreeRecord>>? onTreesUpdated;
 
-  const HomePage({super.key, this.trees, this.onTreesUpdated});
+  // ✅ FIX: ไม่บังคับส่ง trees (แก้ error main_nav.dart const HomePage())
+  const HomePage({super.key, this.trees = const [], this.onTreesUpdated});
 
   @override
   State<HomePage> createState() => _HomePageState();
 }
 
+class _TreeLite {
+  final String id;
+  final String name;
+  const _TreeLite({required this.id, required this.name});
+}
+
+class _ReminderRow {
+  final int reminderId;
+  final String treeId;
+  final DateTime reminderDate;
+  final int isDone; // 0/1
+  final String note;
+  final int? diagnosisHistoryId;
+  final int? treatmentId;
+
+  const _ReminderRow({
+    required this.reminderId,
+    required this.treeId,
+    required this.reminderDate,
+    required this.isDone,
+    required this.note,
+    required this.diagnosisHistoryId,
+    required this.treatmentId,
+  });
+
+  String get dateKey =>
+      '${reminderDate.year.toString().padLeft(4, '0')}-${reminderDate.month.toString().padLeft(2, '0')}-${reminderDate.day.toString().padLeft(2, '0')}';
+
+  _ReminderRow copyWith({int? isDone}) => _ReminderRow(
+        reminderId: reminderId,
+        treeId: treeId,
+        reminderDate: reminderDate,
+        isDone: isDone ?? this.isDone,
+        note: note,
+        diagnosisHistoryId: diagnosisHistoryId,
+        treatmentId: treatmentId,
+      );
+}
+
 class _HomePageState extends State<HomePage> {
+  // ------------ state ------------
+  late List<CitrusTreeRecord> _trees;
+
   DateTime _selectedDate = DateTime.now();
   DateTime _focusedDay = DateTime.now();
 
-  late List<CitrusTreeRecord> _trees;
-  Map<String, List<_DueItem>> _dueIndex = {};
+  bool _loadingReminders = false;
+  String _lastRefreshStamp = '';
 
+  // key: tree_id -> {disease,severity,diagnosedAt,...}
+  Map<String, dynamic> _lastDiagnosisByTreeId = {};
+
+  // reminders ของช่วงเดือนที่กำลังโฟกัส
+  final List<_ReminderRow> _reminders = [];
+
+  // map dateKey -> reminders list
+  final Map<String, List<_ReminderRow>> _remindersByDay = {};
+
+  Timer? _watcher;
+
+  // ------------ helpers ------------
+  Future<String?> _readToken() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('token') ??
+        prefs.getString('access_token') ??
+        prefs.getString('auth_token');
+  }
+
+  Map<String, String> _headers(String? token) => {
+        'Accept': 'application/json',
+        if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+      };
+
+  Map<String, String> _headersJson(String? token) => {
+        ..._headers(token),
+        'Content-Type': 'application/json; charset=utf-8',
+      };
+
+  String _normKey(String s) => s.trim().toLowerCase();
+
+  String _severityToCode(String s) {
+    final t = _normKey(s);
+    if (t.contains('high') || t.contains('สูง') || t.contains('รุนแรง')) return 'high';
+    if (t.contains('medium') || t.contains('กลาง') || t.contains('ปานกลาง')) return 'medium';
+    if (t.contains('low') || t.contains('ต่ำ') || t.contains('น้อย')) return 'low';
+    return t;
+  }
+
+  // ------------ init ------------
   @override
   void initState() {
     super.initState();
+    _trees = List<CitrusTreeRecord>.from(widget.trees);
 
-    // ✅ ลบ DEMO: ใช้ข้อมูลจริงเท่านั้น (ถ้าไม่มีข้อมูล = ว่าง)
-    _trees = List<CitrusTreeRecord>.from(widget.trees ?? const []);
-    _rebuildIndex();
+    _reloadFromPrefs();
+    _loadRemindersForMonth(_focusedDay);
+    _startRefreshWatcher();
   }
 
   @override
   void didUpdateWidget(covariant HomePage oldWidget) {
     super.didUpdateWidget(oldWidget);
-
-    // ✅ ถ้า parent ส่ง trees ใหม่มา ให้ sync
     if (widget.trees != oldWidget.trees) {
-      _trees = List<CitrusTreeRecord>.from(widget.trees ?? const []);
-      _rebuildIndex();
+      _trees = List<CitrusTreeRecord>.from(widget.trees);
+      _rebuildDueIndexFromReminders();
     }
   }
 
-  void _rebuildIndex() {
-    final groups = _buildGroups(_trees);
+  @override
+  void dispose() {
+    _watcher?.cancel();
+    super.dispose();
+  }
 
-    final Map<String, List<_DueItem>> index = {};
-    for (final g in groups) {
-      final occurrences = _generateOccurrences(
-        start: g.startDate,
-        everyDays: g.everyDays,
-        totalTimes: g.totalTimes,
+  void _startRefreshWatcher() {
+    _watcher?.cancel();
+    _watcher = Timer.periodic(const Duration(milliseconds: 800), (_) async {
+      final prefs = await SharedPreferences.getInstance();
+      final ts = prefs.getInt('app_refresh_ts_v1')?.toString() ?? '';
+      if (ts.isNotEmpty && ts != _lastRefreshStamp) {
+        _lastRefreshStamp = ts;
+        await _reloadFromPrefs();
+        await _loadRemindersForMonth(_focusedDay);
+      }
+    });
+  }
+
+  Future<void> _reloadFromPrefs() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString('tree_last_diagnosis_v1') ?? '{}';
+      final decoded = jsonDecode(raw);
+      if (!mounted) return;
+      setState(() {
+        // ✅ FIX: แปลง Map<dynamic,dynamic> -> Map<String,dynamic>
+        if (decoded is Map) {
+          final mapped = decoded.map((k, v) => MapEntry(k.toString(), v));
+          _lastDiagnosisByTreeId = Map<String, dynamic>.from(mapped);
+        } else {
+          _lastDiagnosisByTreeId = <String, dynamic>{};
+        }
+      });
+
+      // หลังจากโหลด prefs → rebuild index จาก reminders ที่มีอยู่
+      _rebuildDueIndexFromReminders();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _lastDiagnosisByTreeId = {};
+      });
+      _rebuildDueIndexFromReminders();
+    }
+  }
+
+  // ---------- reminders load/build ----------
+  Future<void> _loadRemindersForMonth(DateTime focus) async {
+    if (_loadingReminders) return;
+    _loadingReminders = true;
+
+    try {
+      final token = await _readToken();
+      if (token == null || token.isEmpty) {
+        _loadingReminders = false;
+        return;
+      }
+
+      final first = DateTime(focus.year, focus.month, 1);
+      final last = DateTime(focus.year, focus.month + 1, 0);
+
+      final uri = Uri.parse(
+        _joinApi(
+          API_BASE,
+          '/care_reminders/read_care_reminders.php?date_from=${_ymd(first)}&date_to=${_ymd(last)}',
+        ),
       );
 
-      for (final d in occurrences) {
-        final k = _dateKey(d);
-        index.putIfAbsent(k, () => []);
-        index[k]!.add(_DueItem(date: d, group: g));
+      final res = await http.get(uri, headers: _headers(token)).timeout(const Duration(seconds: 12));
+      if (res.statusCode != 200) {
+        _loadingReminders = false;
+        return;
       }
-    }
 
-    _dueIndex = index;
+      final decoded = jsonDecode(res.body);
+      List data = [];
+      if (decoded is Map && decoded['data'] is List) {
+        data = decoded['data'] as List;
+      } else if (decoded is List) {
+        data = decoded;
+      }
+
+      final rows = <_ReminderRow>[];
+      for (final it in data) {
+        if (it is! Map) continue;
+        final m = Map<String, dynamic>.from(it);
+
+        final reminderId = _toInt(m['reminder_id'] ?? m['id']);
+        final treeId = _s(m['tree_id']);
+        final note = _s(m['note']);
+
+        final rawDate = _s(m['reminder_date']);
+        DateTime? dt;
+        if (rawDate.isNotEmpty) {
+          // รองรับทั้ง "yyyy-MM-dd" และ "yyyy-MM-dd HH:mm:ss"
+          dt = DateTime.tryParse(rawDate);
+          if (dt == null && rawDate.length >= 10) {
+            dt = DateTime.tryParse(rawDate.substring(0, 10));
+          }
+        }
+        if (dt == null) continue;
+
+        final isDone = _toInt(m['is_done']);
+        final dhId = (m['diagnosis_history_id'] == null)
+            ? null
+            : int.tryParse(m['diagnosis_history_id'].toString());
+        final tId =
+            (m['treatment_id'] == null) ? null : int.tryParse(m['treatment_id'].toString());
+
+        rows.add(
+          _ReminderRow(
+            reminderId: reminderId,
+            treeId: treeId,
+            reminderDate: _dateOnly(dt),
+            isDone: isDone,
+            note: note,
+            diagnosisHistoryId: dhId,
+            treatmentId: tId,
+          ),
+        );
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _reminders
+          ..clear()
+          ..addAll(rows);
+      });
+
+      _rebuildDueIndexFromReminders();
+    } catch (_) {
+      // ignore
+    } finally {
+      _loadingReminders = false;
+    }
+  }
+
+  void _rebuildDueIndexFromReminders() {
+    _remindersByDay.clear();
+    for (final r in _reminders) {
+      _remindersByDay.putIfAbsent(r.dateKey, () => []);
+      _remindersByDay[r.dateKey]!.add(r);
+    }
     if (mounted) setState(() {});
   }
 
-  List<_Group> _buildGroups(List<CitrusTreeRecord> trees) {
-    final filtered = trees
-        .where((t) => t.disease.trim().isNotEmpty && t.disease.trim() != '-')
-        .toList();
+  List<_ReminderRow> _itemsOfDay(DateTime day) => _remindersByDay[_ymd(day)] ?? const [];
 
-    final Map<String, List<CitrusTreeRecord>> map = {};
-    for (final t in filtered) {
-      final disease = t.disease.trim().toLowerCase();
-      final severity = (t.severity).trim().toLowerCase();
-      final key = '${disease}__${severity}';
-      map.putIfAbsent(key, () => []);
-      map[key]!.add(t);
-    }
-
-    final List<_Group> out = [];
-    map.forEach((key, list) {
-      final base = list.first;
-
-      final taskName =
-          base.treatmentTaskName.trim().isEmpty ? 'พ่นยา' : base.treatmentTaskName.trim();
-
-      final everyDays = base.treatmentEveryDays; // ✅ ไม่ใส่ค่าเดาเอง
-
-      // ✅ ไม่บังคับ 4 ครั้งแล้ว และไม่เดาเอง
-      final totalTimes = base.treatmentTotalTimes;
-
-      final start = list
-          .map(_diagnosedAt)
-          .map(_dateOnly)
-          .reduce((a, b) => a.isBefore(b) ? a : b);
-
-      final parts = key.split('__');
-      final disease = parts.isNotEmpty ? parts[0] : base.disease;
-      final severity = parts.length > 1 ? parts[1] : base.severity;
-
-      out.add(
-        _Group(
-          key: key,
-          disease: disease,
-          severity: severity,
-          taskName: taskName,
-          everyDays: everyDays,
-          totalTimes: totalTimes,
-          startDate: start,
-          trees: list,
-        ),
-      );
-    });
-
-    return out;
-  }
-
-  List<DateTime> _generateOccurrences({
-    required DateTime start,
-    required int everyDays,
-    required int totalTimes,
-  }) {
-    // ✅ ถ้า API ยังไม่ส่ง everyDays/totalTimes มา -> ไม่สร้างวันรักษา
-    if (everyDays <= 0 || totalTimes <= 0) return const [];
-
-    final s = _dateOnly(start);
-    final List<DateTime> out = [];
-    for (int i = 0; i < totalTimes; i++) {
-      out.add(s.add(Duration(days: everyDays * i)));
-    }
-    return out;
-  }
-
-  List<_DueItem> _dueItemsOf(DateTime day) => _dueIndex[_dateKey(day)] ?? const [];
-  bool _hasDue(DateTime day) => _dueItemsOf(day).isNotEmpty;
+  bool _hasDue(DateTime day) => _itemsOfDay(day).isNotEmpty;
 
   bool _isAllDoneOnDay(DateTime day) {
-    final items = _dueItemsOf(day);
+    final items = _itemsOfDay(day);
     if (items.isEmpty) return false;
-    return items.every((it) => it.isDoneAllTrees());
+    return items.every((x) => x.isDone == 1);
   }
 
-  void _setDoneForGroup({
-    required _Group group,
-    required DateTime day,
-    required bool done,
-  }) {
-    final k = _dateKey(day);
+  Future<void> _toggleDone(_ReminderRow r, bool done) async {
+    final token = await _readToken();
+    if (token == null || token.isEmpty) return;
 
-    final updated = _trees.map((t) {
-      final isInGroup = group.trees.any((x) => x.id == t.id);
-      if (!isInGroup) return t;
+    // update DB
+    try {
+      final uri = Uri.parse(_joinApi(API_BASE, '/care_reminders/update_care_reminders.php'));
+      final res = await http
+          .post(
+            uri,
+            headers: _headersJson(token),
+            body: jsonEncode({
+              'reminder_id': r.reminderId,
+              'is_done': done ? 1 : 0,
+            }),
+          )
+          .timeout(const Duration(seconds: 12));
 
-      final nextDone = Set<String>.from(t.treatmentDoneDates);
-      if (done) {
-        nextDone.add(k);
-      } else {
-        nextDone.remove(k);
+      if (res.statusCode == 200) {
+        // update local
+        final idx = _reminders.indexWhere((x) => x.reminderId == r.reminderId);
+        if (idx >= 0) {
+          setState(() {
+            _reminders[idx] = _reminders[idx].copyWith(isDone: done ? 1 : 0);
+          });
+          _rebuildDueIndexFromReminders();
+        }
       }
-      return t.copyWith(treatmentDoneDates: nextDone);
-    }).toList();
-
-    setState(() => _trees = updated);
-
-    widget.onTreesUpdated?.call(List<CitrusTreeRecord>.from(_trees));
-    _rebuildIndex();
+    } catch (_) {}
   }
 
-  // ✅ FIX: สวิตช์ใน dialog ต้องเปลี่ยนทันที + กดแล้วปิด dialog กลับหน้าหลักเลย
   Future<void> _openDueDialog(DateTime day) async {
-    if (_dueItemsOf(day).isEmpty) return;
-    if (!mounted) return;
+    final items = _itemsOfDay(day);
+    if (items.isEmpty) return;
 
     final dateText = '${day.day}/${day.month}/${day.year}';
-
-    final Map<String, bool> tempSwitch = {};
 
     await showDialog(
       context: context,
       barrierDismissible: true,
       builder: (dialogCtx) {
-        return StatefulBuilder(
-          builder: (dialogCtx, setDialogState) {
-            final items = _dueItemsOf(day);
-
-            return Dialog(
-              backgroundColor: Colors.transparent,
-              insetPadding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Center(
-                child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(16),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(22),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.10),
-                        blurRadius: 18,
-                        offset: const Offset(0, 8),
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          insetPadding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Center(
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(22),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.10),
+                    blurRadius: 18,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    children: [
+                      const Expanded(
+                        child: Text(
+                          'งานที่ต้องทำวันนี้',
+                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                      InkWell(
+                        onTap: () {
+                          if (Navigator.of(dialogCtx, rootNavigator: true).canPop()) {
+                            Navigator.of(dialogCtx, rootNavigator: true).pop();
+                          }
+                        },
+                        borderRadius: BorderRadius.circular(999),
+                        child: const Padding(
+                          padding: EdgeInsets.all(6),
+                          child: Icon(Icons.close, size: 20),
+                        ),
                       ),
                     ],
                   ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Row(
+                  const SizedBox(height: 6),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'วันที่: $dateText',
+                      style: const TextStyle(fontWeight: FontWeight.w500),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  ...items.map((it) {
+                    final doneNow = it.isDone == 1;
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 10),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF7F7F7),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: const Color(0xFFEAEAEA)),
+                      ),
+                      child: Row(
                         children: [
-                          const Expanded(
+                          Expanded(
                             child: Text(
-                              'งานที่ต้องทำวันนี้',
-                              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                              '${it.note.isNotEmpty ? it.note : 'งานดูแล'}  ${doneNow ? "(ทำแล้ว)" : "(ยังไม่ได้ทำ)"}',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w600,
+                                color: doneNow ? kPrimaryGreen : Colors.red,
+                              ),
                             ),
                           ),
-                          InkWell(
-                            onTap: () {
+                          Switch(
+                            value: doneNow,
+                            activeColor: kPrimaryGreen,
+                            onChanged: (v) async {
+                              await _toggleDone(it, v);
                               if (Navigator.of(dialogCtx, rootNavigator: true).canPop()) {
                                 Navigator.of(dialogCtx, rootNavigator: true).pop();
                               }
                             },
-                            borderRadius: BorderRadius.circular(999),
-                            child: const Padding(
-                              padding: EdgeInsets.all(6),
-                              child: Icon(Icons.close, size: 20),
-                            ),
                           ),
                         ],
                       ),
-                      const SizedBox(height: 6),
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          'วันที่: $dateText',
-                          style: const TextStyle(fontWeight: FontWeight.w500),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-
-                      ...items.map((it) {
-                        final key = '${it.group.key}__${_dateKey(it.date)}';
-                        final bool doneNow = tempSwitch[key] ?? it.isDoneAllTrees();
-
-                        return Container(
-                          margin: const EdgeInsets.only(bottom: 10),
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFF7F7F7),
-                            borderRadius: BorderRadius.circular(16),
-                            border: Border.all(color: const Color(0xFFEAEAEA)),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                children: [
-                                  Expanded(
-                                    child: Text(
-                                      '${it.group.taskName}  ${doneNow ? "(ทำแล้ว)" : "(ยังไม่ได้ทำ)"}',
-                                      style: TextStyle(
-                                        fontSize: 16,
-                                        fontWeight: FontWeight.w600,
-                                        color: doneNow ? kPrimaryGreen : Colors.red,
-                                      ),
-                                    ),
-                                  ),
-                                  Switch(
-                                    value: doneNow,
-                                    activeColor: kPrimaryGreen,
-                                    onChanged: (v) {
-                                      setDialogState(() => tempSwitch[key] = v);
-                                      _setDoneForGroup(group: it.group, day: it.date, done: v);
-
-                                      Future.delayed(const Duration(milliseconds: 120), () {
-                                        if (Navigator.of(dialogCtx, rootNavigator: true).canPop()) {
-                                          Navigator.of(dialogCtx, rootNavigator: true).pop();
-                                        }
-                                      });
-                                    },
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 6),
-                              Text(
-                                'โรค: ${it.group.disease}  •  ความรุนแรง: ${it.group.severity}',
-                                style: const TextStyle(fontWeight: FontWeight.w500),
-                              ),
-                              const SizedBox(height: 8),
-                              const Text(
-                                'ต้นที่ต้องรักษา:',
-                                style: TextStyle(fontWeight: FontWeight.w600),
-                              ),
-                              const SizedBox(height: 6),
-                              Wrap(
-                                spacing: 8,
-                                runSpacing: 8,
-                                children: it.group.trees
-                                    .map(
-                                      (t) => Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                        decoration: BoxDecoration(
-                                          color: Colors.white,
-                                          borderRadius: BorderRadius.circular(999),
-                                          border: Border.all(color: const Color(0xFFE1E1E1)),
-                                        ),
-                                        child: Text(
-                                          t.name,
-                                          style: const TextStyle(fontWeight: FontWeight.w500),
-                                        ),
-                                      ),
-                                    )
-                                    .toList(),
-                              ),
-                            ],
-                          ),
-                        );
-                      }),
-                    ],
-                  ),
-                ),
+                    );
+                  }),
+                ],
               ),
-            );
-          },
+            ),
+          ),
         );
       },
     );
   }
 
-  /// ✅ ตามที่ขอ:
-  /// - วันต้องรักษา = วงกลมเต็ม แดง / ถ้าทำแล้ว = เขียว
-  /// - วันปกติที่เลือก = วงขอบเขียว
   Widget _dayCell(DateTime day, {required bool selected, required bool outside}) {
     final bool due = _hasDue(day);
     final bool allDone = due ? _isAllDoneOnDay(day) : false;
@@ -423,7 +496,7 @@ class _HomePageState extends State<HomePage> {
     final double calendarHeight = MediaQuery.of(context).size.height * 0.45;
 
     return Scaffold(
-      backgroundColor: kPageBg,
+      backgroundColor: kBg,
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
@@ -448,7 +521,6 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
               const SizedBox(height: 10),
-
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(16),
@@ -495,9 +567,7 @@ class _HomePageState extends State<HomePage> {
                   ],
                 ),
               ),
-
               const SizedBox(height: 16),
-
               const Text(
                 'ปฏิทินสวนส้ม',
                 style: TextStyle(
@@ -512,11 +582,10 @@ class _HomePageState extends State<HomePage> {
                 style: TextStyle(fontSize: 14, fontWeight: FontWeight.w400, color: Colors.black54),
               ),
               const SizedBox(height: 8),
-
               SizedBox(
                 height: calendarHeight,
                 child: Card(
-                  color: kCalendarCardBg,
+                  color: Colors.white,
                   elevation: 0,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
                   child: Padding(
@@ -544,7 +613,10 @@ class _HomePageState extends State<HomePage> {
                       ),
                       rowHeight: 52,
                       daysOfWeekHeight: 28,
-                      onPageChanged: (focusedDay) => setState(() => _focusedDay = focusedDay),
+                      onPageChanged: (focusedDay) async {
+                        setState(() => _focusedDay = focusedDay);
+                        await _loadRemindersForMonth(focusedDay);
+                      },
                       onDaySelected: (selectedDay, focusedDay) async {
                         setState(() {
                           _selectedDate = selectedDay;
