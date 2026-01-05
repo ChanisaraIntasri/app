@@ -4,11 +4,11 @@ import 'package:flutter_application_1/pages/account/edit_username_page.dart';
 class SettingPage extends StatefulWidget {
   const SettingPage({
     super.key,
-    this.initialUsername = 'farmer_somchai', // ถ้ายังไม่ส่งมาก็ใช้ค่านี้ชั่วคราว
+    this.initialUsername = 'farmer_somchai', 
   });
 
-  // สีหลักของหน้า setting
-  static const Color kPrimaryGreen = Color(0xFF005E33); // << เปลี่ยนจากส้มเป็นเขียว
+ 
+  static const Color kPrimaryGreen = Color(0xFF005E33); 
   static const Color kCardBg = Color(0xFFF5F5F5);
   static const Color kTextDark = Color(0xFF3A2A1A);
   static const double kRadius = 26;
@@ -39,15 +39,15 @@ class _SettingPageState extends State<SettingPage> {
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // ===== บล็อกด้านบนสีเขียว ชิดขอบบน ไม่โค้ง =====
+          
           Container(
             padding: EdgeInsets.fromLTRB(
               24,
-              paddingTop + 90, // เผื่อพื้นที่ status bar แล้วเว้น 32px
+              paddingTop + 90, 
               24,
               80,
             ),
-            color: SettingPage.kPrimaryGreen, // << ใช้สีเขียว
+            color: SettingPage.kPrimaryGreen, 
             child: const Column(
               mainAxisSize: MainAxisSize.min,
               children: [

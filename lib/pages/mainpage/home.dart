@@ -95,6 +95,36 @@ class _HomePageState extends State<HomePage> {
   // ------------ state ------------
   late List<CitrusTreeRecord> _trees;
 
+  // ✅ map tree_id -> ลำดับต้นที่ (ต้นที่ 1,2,3...) เพื่อแสดงแบบที่ผู้ใช้เข้าใจ
+  Map<String, int> _treeNoById = {};
+
+  void _ensureTreeNoIndex() {
+    // ถ้ามี list ต้น (มาจากหน้า Share/เพิ่มต้น) ใช้ลำดับตาม list นี้เลย
+    if (_trees.isNotEmpty) {
+      _treeNoById = {
+        for (int i = 0; i < _trees.length; i++) _trees[i].id.toString(): i + 1,
+      };
+      return;
+    }
+
+    // ถ้าไม่มี list ต้นส่งเข้ามา ให้สร้างลำดับจาก treeId ที่พบใน reminders
+    final ids = <String>{};
+    for (final r in _reminders) {
+      final id = r.treeId.toString().trim();
+      if (id.isNotEmpty) ids.add(id);
+    }
+    final sorted = ids.toList()
+      ..sort((a, b) {
+        final ai = int.tryParse(a);
+        final bi = int.tryParse(b);
+        if (ai != null && bi != null) return ai.compareTo(bi);
+        return a.compareTo(b);
+      });
+    _treeNoById = {
+      for (int i = 0; i < sorted.length; i++) sorted[i]: i + 1,
+    };
+  }
+
   DateTime _selectedDate = DateTime.now();
   DateTime _focusedDay = DateTime.now();
 
@@ -103,6 +133,40 @@ class _HomePageState extends State<HomePage> {
 
   // key: tree_id -> {disease,severity,diagnosedAt,...}
   Map<String, dynamic> _lastDiagnosisByTreeId = {};
+
+  // ---------- tree display helper ----------
+// แสดง "ชื่อต้น" ถ้ามี, ไม่งั้นแสดง "ต้นที่ N" (ไม่แสดง id ตรง ๆ)
+String _treeLabelById(String treeId) {
+  final tid = treeId.toString().trim();
+
+  // 1) ถ้ามี list ต้นและมีชื่อ → ใช้ชื่อ
+  if (_trees.isNotEmpty) {
+    final idx = _trees.indexWhere((t) => t.id.toString() == tid);
+    if (idx >= 0) {
+      final n = _s(_trees[idx].name);
+      if (n.isNotEmpty) {
+        // ถ้าชื่อดูเหมือน "ต้น 70" หรือเป็นตัวเลขล้วน ๆ → ไม่เอา (ถือว่าเป็น id)
+        final norm = n.replaceAll(RegExp(r'\s+'), ' ').trim();
+        final looksLikeId =
+            RegExp(r'^(ต้น\s*)?\d+$').hasMatch(norm) || norm == 'ต้น $tid';
+        if (!looksLikeId) return n;
+      }
+
+      // ไม่มีชื่อ/ชื่อเป็น id → ใช้ลำดับใน list
+      return 'ต้นที่ ${idx + 1}';
+    }
+  }
+
+  // 2) ถ้าไม่พบใน list → ใช้ mapping จาก reminders เพื่อเป็น "ต้นที่ N"
+  _ensureTreeNoIndex();
+  final no = _treeNoById[tid];
+  if (no != null) return 'ต้นที่ $no';
+
+  // 3) fallback สุดท้าย (กันพัง)
+  return tid.isNotEmpty ? 'ต้นที่ ?' : 'ไม่ทราบชื่อต้น';
+}
+
+
 
   // reminders ของช่วงเดือนที่กำลังโฟกัส
   final List<_ReminderRow> _reminders = [];
@@ -422,13 +486,27 @@ class _HomePageState extends State<HomePage> {
                       child: Row(
                         children: [
                           Expanded(
-                            child: Text(
-                              '${it.note.isNotEmpty ? it.note : 'งานดูแล'}  ${doneNow ? "(ทำแล้ว)" : "(ยังไม่ได้ทำ)"}',
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                                color: doneNow ? kPrimaryGreen : Colors.red,
-                              ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '${it.note.isNotEmpty ? it.note : 'งานดูแล'}  ${doneNow ? "(ทำแล้ว)" : "(ยังไม่ได้ทำ)"}',
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                    color: doneNow ? kPrimaryGreen : Colors.red,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  'ต้น: ${_treeLabelById(it.treeId)}',
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w500,
+                                    color: Color(0xFF6B6B6B),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
                           Switch(

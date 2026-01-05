@@ -385,6 +385,7 @@ class _EditUsernamePageState extends State<EditUsernamePage> {
                               style: TextStyle(
                                 fontSize: 15,
                                 fontWeight: FontWeight.w700,
+                                color: Color.fromARGB(255, 252, 250, 250),
                               ),
                             ),
                     ),
