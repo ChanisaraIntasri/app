@@ -6,10 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:flutter_application_1/models/citrus_tree_record.dart';
 import 'package:flutter_application_1/pages/mainpage/tree_history_page.dart';
-
-// ✅ หน้าทดสอบเลือกโรค + หน้าคำถาม
-import 'package:flutter_application_1/pages/diagnosis/disease_select_page.dart';
-import 'package:flutter_application_1/pages/diagnosis/disease_questions_page.dart';
+import 'package:flutter_application_1/pages/mainpage/scan_page.dart' as scan;
 
 // ================== THEME ==================
 const kBg = Color(0xFFFFFFFF);
@@ -25,9 +22,6 @@ const String API_BASE = String.fromEnvironment(
   'API_BASE',
   defaultValue: 'https://latricia-nonodoriferous-snoopily.ngrok-free.dev/crud/api',
 );
-
-// ✅ ตอนนี้ยังไม่มีโมเดลสแกน → ใช้ flow เลือกโรคแทน
-const bool kMockScanFlow = true;
 
 // ✅ ปรับ “ระยะยก” ปุ่ม + ให้พ้นแถบเมนูด้านล่าง
 const double kFabLift = 92;
@@ -120,6 +114,7 @@ class _SharePageState extends State<SharePage> {
     }
     return mx + 1;
   }
+
   // ✅ เรียงลำดับต้นส้ม: ต้นที่ 1 อยู่บนสุด แล้วไล่ไปเรื่อย ๆ
   int _orderOf(CitrusTreeRecord r) {
     final m = RegExp(r'(\d+)$').firstMatch(r.name.trim());
@@ -218,27 +213,26 @@ class _SharePageState extends State<SharePage> {
     }
   }
 
-// ---------- Intro (Flash cards) ----------
-Future<void> _maybeShowIntro() async {
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    final seen = prefs.getBool(kShareIntroSeenKey) ?? false;
-    if (!seen && mounted) {
-      setState(() => _showIntroOverlay = true);
+  // ---------- Intro (Flash cards) ----------
+  Future<void> _maybeShowIntro() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final seen = prefs.getBool(kShareIntroSeenKey) ?? false;
+      if (!seen && mounted) {
+        setState(() => _showIntroOverlay = true);
+      }
+    } catch (_) {
+      // ถ้า prefs มีปัญหา → ก็ยังให้ใช้งานต่อได้
     }
-  } catch (_) {
-    // ถ้า prefs มีปัญหา → ก็ยังให้ใช้งานต่อได้
   }
-}
 
-Future<void> _dismissIntro() async {
-  try {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(kShareIntroSeenKey, true);
-  } catch (_) {}
-  if (mounted) setState(() => _showIntroOverlay = false);
-}
-
+  Future<void> _dismissIntro() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(kShareIntroSeenKey, true);
+    } catch (_) {}
+    if (mounted) setState(() => _showIntroOverlay = false);
+  }
 
   Future<void> _createTree({required String name, String description = ''}) async {
     if (_busy) return;
@@ -264,7 +258,9 @@ Future<void> _dismissIntro() async {
 
       // ✅ รองรับรูปแบบตอบกลับหลายแบบ
       final ok = decoded is Map &&
-          ((decoded['ok'] == true) || (decoded['success'] == true) || (decoded['status'] == true));
+          ((decoded['ok'] == true) ||
+              (decoded['success'] == true) ||
+              (decoded['status'] == true));
 
       if (ok) {
         // พยายามดึง id ที่ backend ส่งกลับมา (ถ้ามี)
@@ -273,7 +269,9 @@ Future<void> _dismissIntro() async {
           newId = (decoded['tree_id'] ??
                   decoded['id'] ??
                   decoded['treeId'] ??
-                  (decoded['data'] is Map ? (decoded['data']['tree_id'] ?? decoded['data']['id']) : null) ??
+                  (decoded['data'] is Map
+                      ? (decoded['data']['tree_id'] ?? decoded['data']['id'])
+                      : null) ??
                   '')
               .toString();
         }
@@ -316,7 +314,7 @@ Future<void> _dismissIntro() async {
     }
   }
 
-Future<void> _updateTree(
+  Future<void> _updateTree(
     CitrusTreeRecord r, {
     required String name,
     required String description,
@@ -378,7 +376,9 @@ Future<void> _updateTree(
 
       final decoded = _tryDecode(res.body);
       final ok = decoded is Map &&
-          ((decoded['ok'] == true) || (decoded['success'] == true) || (decoded['status'] == true));
+          ((decoded['ok'] == true) ||
+              (decoded['success'] == true) ||
+              (decoded['status'] == true));
 
       if (!ok) {
         throw Exception('DELETE_FAILED');
@@ -398,7 +398,7 @@ Future<void> _updateTree(
     }
   }
 
-// ---------- UX Actions ----------
+  // ---------- UX Actions ----------
   Future<void> _addTreeAutoName() async {
     final name = 'ต้นที่ $_nextTreeNumber';
     _nextTreeNumber += 1;
@@ -408,25 +408,39 @@ Future<void> _updateTree(
   Future<void> _addManyTreesDialog() async {
     final controller = TextEditingController(text: '5');
 
-    final n = await showDialog<int?>
-        (context: context, builder: (_) {
+    final n = await showDialog<int?>(context: context, builder: (dCtx) {
       return AlertDialog(
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
         title: const Text('เพิ่มหลายต้น'),
-        content: TextField(
-          controller: controller,
-          keyboardType: TextInputType.number,
-          decoration: const InputDecoration(
-            hintText: 'จำนวนต้น เช่น 5',
-            border: OutlineInputBorder(),
+        content: SizedBox(
+          width: 320,
+          child: TextField(
+            controller: controller,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              hintText: 'จำนวนต้น เช่น 5',
+              filled: true,
+              fillColor: Color(0xFFF3F4F6),
+              isDense: true,
+              contentPadding: EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(16))),
+            ),
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, null), child: const Text('ยกเลิก')),
+          TextButton(onPressed: () => Navigator.pop(dCtx, null), child: const Text('ยกเลิก')),
           ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: kPrimaryGreen),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: kPrimaryGreen,
+              foregroundColor: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+              elevation: 0,
+            ),
             onPressed: () {
               final v = int.tryParse(controller.text.trim());
-              Navigator.pop(context, v);
+              Navigator.pop(dCtx, v);
             },
             child: const Text('เพิ่ม'),
           ),
@@ -442,30 +456,22 @@ Future<void> _updateTree(
   }
 
   Future<void> _openHistory(CitrusTreeRecord r) async {
-
     await Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => TreeHistoryPage(record: r)),
     );
   }
 
+  // ✅ เปลี่ยน flow: กดถ่ายรูป → เปิดกล้องแบบ fullscreen (ไม่มีแถบเมนูล่าง)
   Future<void> _openScanFlow(CitrusTreeRecord r) async {
-    if (!kMockScanFlow) return;
-
-    // ✅ ใหม่: เลือกโรคแล้วไปหน้า “วินิจฉัยโรค” (DiseaseDiagnosisPage) ทันที
-    // แล้วค่อยกดปุ่ม “ตอบคำถาม” จากหน้า DiseaseDiagnosisPage เพื่อไปหน้า DiseaseQuestionsPage
     if (!mounted) return;
 
-    final treeIdInt = int.tryParse('${r.id}');
-
-    await Navigator.push(
-      context,
+    // ✅ สำคัญ: rootNavigator = true เพื่อให้ทับทั้งจอ (Nav bar ล่างหายแน่นอน)
+    await Navigator.of(context, rootNavigator: true).push(
       MaterialPageRoute(
-        settings: RouteSettings(arguments: {'treeId': treeIdInt}),
-        builder: (_) => DiseaseSelectPage(
-          fetchFromApi: true,
-          treeId: treeIdInt,
-          navigateToDiagnosis: true,
+        builder: (_) => scan.ScanPage(
+          treeId: r.id,
+          treeName: r.name,
         ),
       ),
     );
@@ -508,8 +514,8 @@ Future<void> _updateTree(
             'บันทึกประวัติสวนส้ม',
             style: TextStyle(
               color: Colors.white,
-              fontSize: 22.0, // ✅ ให้เหมือนในรูป
-              fontWeight: FontWeight.w600, // ✅ บางลง
+              fontSize: 22.0,
+              fontWeight: FontWeight.w600,
             ),
           ),
           const SizedBox(height: 6),
@@ -558,62 +564,78 @@ Future<void> _updateTree(
   }
 
   Widget _treeCard(CitrusTreeRecord r) {
-    return InkWell(
-      onTap: () => _openTreeDetailDialog(r),
-      borderRadius: BorderRadius.circular(22),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        decoration: BoxDecoration(
-          color: kCardBg,
-          borderRadius: BorderRadius.circular(22),
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 52,
-              height: 52,
-              decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
-              child: const Icon(Icons.eco, color: kPrimaryGreen, size: 26),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    r.name,
-                    style: const TextStyle(
-                      color: kTextBrown,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600, // ✅ บางลง
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'แตะเพื่อดูรายละเอียด',
-                    style: TextStyle(
-                      color: kTextBrown.withOpacity(0.65),
-                      fontSize: 13.8,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 8),
-            Text(
-              _fmtDate(r.createdAt),
-              style: const TextStyle(
-                color: kTextGrey,
-                fontSize: 11.8,
-                fontWeight: FontWeight.w400,
-              ),
-            ),
-          ],
-        ),
+  final enabled = !_busy;
+
+  return InkWell(
+    onTap: () => _openTreeDetailDialog(r),
+    borderRadius: BorderRadius.circular(22),
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: kCardBg,
+        borderRadius: BorderRadius.circular(22),
       ),
-    );
-  }
+      child: Row(
+        children: [
+          Container(
+            width: 52,
+            height: 52,
+            decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+            child: const Icon(Icons.eco, color: kPrimaryGreen, size: 26),
+          ),
+          const SizedBox(width: 14),
+
+          // ข้อความฝั่งซ้าย
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  r.name,
+                  style: const TextStyle(
+                    color: kTextBrown,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'แตะเพื่อดูรายละเอียด',
+                  style: TextStyle(
+                    color: kTextBrown.withOpacity(0.65),
+                    fontSize: 13.8,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          const SizedBox(width: 12),
+
+          // ✅ ปุ่มถ่ายภาพใบส้ม: อยู่ด้านขวาสุด, แสดงเฉพาะไอคอน, ไม่มีพื้นขาวรอบปุ่ม
+          SizedBox(
+            width: 52,
+            height: 52,
+            child: Material(
+              color: enabled ? kPrimaryGreen : kPrimaryGreen.withOpacity(0.45),
+              borderRadius: BorderRadius.circular(18),
+              child: InkWell(
+                onTap: enabled ? () => _openScanFlow(r) : null,
+                borderRadius: BorderRadius.circular(18),
+                child: const Center(
+                  child: Icon(Icons.photo_camera, color: Colors.white, size: 24),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+
 
   Widget _emptyState() {
     return const Padding(
@@ -640,7 +662,7 @@ Future<void> _updateTree(
     String? hintText,
   }) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
       decoration: BoxDecoration(
         color: kCardBg,
         borderRadius: BorderRadius.circular(20),
@@ -650,9 +672,9 @@ Future<void> _updateTree(
         children: [
           Text(
             label,
-            style: const TextStyle(color: kTextBrown, fontWeight: FontWeight.w700, fontSize: 14.5),
+            style: const TextStyle(color: kTextBrown, fontWeight: FontWeight.w700, fontSize: 13.5),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
           TextField(
             controller: controller,
             maxLines: maxLines,
@@ -662,7 +684,7 @@ Future<void> _updateTree(
               hintStyle: TextStyle(color: kTextBrown.withOpacity(0.45), fontWeight: FontWeight.w400),
               border: InputBorder.none,
             ),
-            style: const TextStyle(color: Colors.black87, fontSize: 15.5, fontWeight: FontWeight.w600),
+            style: const TextStyle(color: Colors.black87, fontSize: 14.5, fontWeight: FontWeight.w600),
           ),
         ],
       ),
@@ -704,7 +726,7 @@ Future<void> _updateTree(
                   _fieldCard(
                     label: 'รายละเอียด',
                     controller: descCtl,
-                    maxLines: 3,
+                    maxLines: 2,
                     hintText: 'เช่น ต้นที่ 1 นับจากริมรั้ว',
                   ),
 
@@ -714,42 +736,28 @@ Future<void> _updateTree(
                       Expanded(
                         child: SizedBox(
                           height: 50,
-                          child: OutlinedButton.icon(
-                            onPressed: () async {
-                              Navigator.pop(ctx);
-                              await _openHistory(r);
-                            },
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: kPrimaryGreen,
-                              side: const BorderSide(color: kPrimaryGreen, width: 1.6),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-                            ),
-                            icon: const Icon(Icons.history),
-                            label: const Text('ดูประวัติ', style: TextStyle(fontSize: 15.0, fontWeight: FontWeight.w700)),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: SizedBox(
-                          height: 50,
                           child: ElevatedButton.icon(
                             onPressed: () async {
                               Navigator.pop(ctx);
-                              await _openScanFlow(r);
+                              await _openHistory(r);
                             },
                             style: ElevatedButton.styleFrom(
                               backgroundColor: kPrimaryGreen,
                               foregroundColor: Colors.white,
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+                              elevation: 0,
                             ),
-                            icon: const Icon(Icons.photo_camera),
-                            label: const Text('ถ่ายรูปใบส้ม', style: TextStyle(fontSize: 15.0, fontWeight: FontWeight.w700)),
+                            icon: const Icon(Icons.history),
+                            label: const Text(
+                              'ดูประวัติ',
+                              style: TextStyle(fontSize: 15.0, fontWeight: FontWeight.w700),
+                            ),
                           ),
                         ),
                       ),
                     ],
                   ),
+
 
                   const SizedBox(height: 10),
                   Text(
@@ -784,7 +792,7 @@ Future<void> _updateTree(
                       Expanded(
                         child: SizedBox(
                           height: 52,
-                          child: ElevatedButton(
+                          child: OutlinedButton(
                             onPressed: () async {
                               final name = nameCtl.text.trim();
                               final desc = descCtl.text.trim();
@@ -795,9 +803,9 @@ Future<void> _updateTree(
                               Navigator.pop(ctx);
                               await _updateTree(r, name: name, description: desc);
                             },
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: kPrimaryGreen,
-                              foregroundColor: Colors.white,
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: kPrimaryGreen,
+                              side: const BorderSide(color: kPrimaryGreen, width: 1.8),
                               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
                             ),
                             child: const Text('บันทึก', style: TextStyle(fontSize: 16.0, fontWeight: FontWeight.w700)),
@@ -822,37 +830,37 @@ Future<void> _updateTree(
       body: Stack(
         children: [
           SafeArea(
-                  child: RefreshIndicator(
-                    onRefresh: _loadTrees,
-                    child: ListView(
-                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 140),
-                      children: [
-                        _banner(),
-                        const SizedBox(height: 16),
-                        if (_loading)
-                          const Padding(
-                            padding: EdgeInsets.only(top: 40),
-                            child: Center(child: CircularProgressIndicator()),
-                          )
-                        else if (_records.isEmpty)
-                          _emptyState()
-                        else
-                          ..._records.map(
-                            (r) => Padding(
-                              padding: const EdgeInsets.only(bottom: 14),
-                              child: Dismissible(
-                                key: ValueKey('tree_${r.id}_${r.name}'),
-                                direction: DismissDirection.startToEnd, // ปัดไปทางขวาเพื่อลบ
-                                background: _swipeDeleteBackground(),
-                                onDismissed: (_) => _deleteTree(r),
-                                child: _treeCard(r),
-                              ),
-                            ),
-                          ),
-                      ],
+            child: RefreshIndicator(
+              onRefresh: _loadTrees,
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(16, 14, 16, 140),
+                children: [
+                  _banner(),
+                  const SizedBox(height: 16),
+                  if (_loading)
+                    const Padding(
+                      padding: EdgeInsets.only(top: 40),
+                      child: Center(child: CircularProgressIndicator()),
+                    )
+                  else if (_records.isEmpty)
+                    _emptyState()
+                  else
+                    ..._records.map(
+                      (r) => Padding(
+                        padding: const EdgeInsets.only(bottom: 14),
+                        child: Dismissible(
+                          key: ValueKey('tree_${r.id}_${r.name}'),
+                          direction: DismissDirection.startToEnd,
+                          background: _swipeDeleteBackground(),
+                          onDismissed: (_) => _deleteTree(r),
+                          child: _treeCard(r),
+                        ),
+                      ),
                     ),
-                  ),
-                ),
+                ],
+              ),
+            ),
+          ),
 
           if (_showIntroOverlay)
             _IntroOverlay(
@@ -861,7 +869,6 @@ Future<void> _updateTree(
         ],
       ),
 
-      // ✅ ข้อ 1: ยกปุ่ม + ขึ้น ไม่ให้แถบเมนูบัง
       floatingActionButton: Padding(
         padding: const EdgeInsets.only(bottom: kFabLift),
         child: FloatingActionButton(
@@ -876,7 +883,6 @@ Future<void> _updateTree(
     );
   }
 }
-
 
 // ================== INTRO OVERLAY (Flash cards) ==================
 
@@ -918,7 +924,7 @@ class _IntroOverlayState extends State<_IntroOverlay> {
     ),
     _IntroSlide(
       title: 'ถ่ายรูปใบส้มเป็นรายต้น',
-      desc: 'แตะการ์ดต้นส้ม แล้วกด “ถ่ายรูปใบส้ม”\nเพื่อบันทึกผลสแกนลงต้นนั้น',
+      desc: 'แตะการ์ดต้นส้ม แล้วกดไอคอนกล้องด้านขวา\nเพื่อถ่ายรูปใบส้มของต้นนั้น',
       icon: Icons.camera_alt_rounded,
     ),
   ];
@@ -974,7 +980,6 @@ class _IntroOverlayState extends State<_IntroOverlay> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Header (Icon)
                   Container(
                     width: 62,
                     height: 62,
@@ -992,7 +997,6 @@ class _IntroOverlayState extends State<_IntroOverlay> {
                   ),
                   const SizedBox(height: 14),
 
-                  // Slides
                   SizedBox(
                     height: 150,
                     child: PageView.builder(
@@ -1034,7 +1038,6 @@ class _IntroOverlayState extends State<_IntroOverlay> {
                   _dots(),
                   const SizedBox(height: 14),
 
-                  // Actions
                   Row(
                     children: [
                       Expanded(

@@ -135,38 +135,36 @@ class _HomePageState extends State<HomePage> {
   Map<String, dynamic> _lastDiagnosisByTreeId = {};
 
   // ---------- tree display helper ----------
-// แสดง "ชื่อต้น" ถ้ามี, ไม่งั้นแสดง "ต้นที่ N" (ไม่แสดง id ตรง ๆ)
-String _treeLabelById(String treeId) {
-  final tid = treeId.toString().trim();
+  // แสดง "ชื่อต้น" ถ้ามี, ไม่งั้นแสดง "ต้นที่ N" (ไม่แสดง id ตรง ๆ)
+  String _treeLabelById(String treeId) {
+    final tid = treeId.toString().trim();
 
-  // 1) ถ้ามี list ต้นและมีชื่อ → ใช้ชื่อ
-  if (_trees.isNotEmpty) {
-    final idx = _trees.indexWhere((t) => t.id.toString() == tid);
-    if (idx >= 0) {
-      final n = _s(_trees[idx].name);
-      if (n.isNotEmpty) {
-        // ถ้าชื่อดูเหมือน "ต้น 70" หรือเป็นตัวเลขล้วน ๆ → ไม่เอา (ถือว่าเป็น id)
-        final norm = n.replaceAll(RegExp(r'\s+'), ' ').trim();
-        final looksLikeId =
-            RegExp(r'^(ต้น\s*)?\d+$').hasMatch(norm) || norm == 'ต้น $tid';
-        if (!looksLikeId) return n;
+    // 1) ถ้ามี list ต้นและมีชื่อ → ใช้ชื่อ
+    if (_trees.isNotEmpty) {
+      final idx = _trees.indexWhere((t) => t.id.toString() == tid);
+      if (idx >= 0) {
+        final n = _s(_trees[idx].name);
+        if (n.isNotEmpty) {
+          // ถ้าชื่อดูเหมือน "ต้น 70" หรือเป็นตัวเลขล้วน ๆ → ไม่เอา (ถือว่าเป็น id)
+          final norm = n.replaceAll(RegExp(r'\s+'), ' ').trim();
+          final looksLikeId =
+              RegExp(r'^(ต้น\s*)?\d+$').hasMatch(norm) || norm == 'ต้น $tid';
+          if (!looksLikeId) return n;
+        }
+
+        // ไม่มีชื่อ/ชื่อเป็น id → ใช้ลำดับใน list
+        return 'ต้นที่ ${idx + 1}';
       }
-
-      // ไม่มีชื่อ/ชื่อเป็น id → ใช้ลำดับใน list
-      return 'ต้นที่ ${idx + 1}';
     }
+
+    // 2) ถ้าไม่พบใน list → ใช้ mapping จาก reminders เพื่อเป็น "ต้นที่ N"
+    _ensureTreeNoIndex();
+    final no = _treeNoById[tid];
+    if (no != null) return 'ต้นที่ $no';
+
+    // 3) fallback สุดท้าย (กันพัง)
+    return tid.isNotEmpty ? 'ต้นที่ ?' : 'ไม่ทราบชื่อต้น';
   }
-
-  // 2) ถ้าไม่พบใน list → ใช้ mapping จาก reminders เพื่อเป็น "ต้นที่ N"
-  _ensureTreeNoIndex();
-  final no = _treeNoById[tid];
-  if (no != null) return 'ต้นที่ $no';
-
-  // 3) fallback สุดท้าย (กันพัง)
-  return tid.isNotEmpty ? 'ต้นที่ ?' : 'ไม่ทราบชื่อต้น';
-}
-
-
 
   // reminders ของช่วงเดือนที่กำลังโฟกัส
   final List<_ReminderRow> _reminders = [];
@@ -380,7 +378,17 @@ String _treeLabelById(String treeId) {
     return items.every((x) => x.isDone == 1);
   }
 
+  // ✅ อนุญาตให้ติ๊กได้เฉพาะ "วันนี้" หรือ "วันย้อนหลัง" เท่านั้น (ห้ามวันอนาคต)
+  bool _isFutureDay(DateTime day) {
+    final today = _dateOnly(DateTime.now());
+    return _dateOnly(day).isAfter(today);
+  }
+
   Future<void> _toggleDone(_ReminderRow r, bool done) async {
+    // ✅ กันติ๊กวันอนาคต + กันย้อนกลับเป็นยังไม่ทำ
+    if (_isFutureDay(r.reminderDate)) return;
+    if (!done) return; // ห้ามย้อนกลับเป็น "ยังไม่ได้ทำ"
+
     final token = await _readToken();
     if (token == null || token.isEmpty) return;
 
@@ -475,6 +483,7 @@ String _treeLabelById(String treeId) {
                   const SizedBox(height: 12),
                   ...items.map((it) {
                     final doneNow = it.isDone == 1;
+                    final isFuture = _isFutureDay(day);
                     return Container(
                       margin: const EdgeInsets.only(bottom: 10),
                       padding: const EdgeInsets.all(12),
@@ -512,12 +521,17 @@ String _treeLabelById(String treeId) {
                           Switch(
                             value: doneNow,
                             activeColor: kPrimaryGreen,
-                            onChanged: (v) async {
-                              await _toggleDone(it, v);
-                              if (Navigator.of(dialogCtx, rootNavigator: true).canPop()) {
-                                Navigator.of(dialogCtx, rootNavigator: true).pop();
-                              }
-                            },
+                            onChanged: (isFuture || doneNow)
+                                ? null
+                                : (v) async {
+                                    // ✅ 1) ถ้าติ๊กว่า "ทำแล้ว" แล้ว ห้ามย้อนกลับเป็น "ยังไม่ได้ทำ"
+                                    // ✅ 2) ถ้าเป็น "วันอนาคต" ห้ามติ๊ก
+                                    if (!v) return;
+                                    await _toggleDone(it, true);
+                                    if (Navigator.of(dialogCtx, rootNavigator: true).canPop()) {
+                                      Navigator.of(dialogCtx, rootNavigator: true).pop();
+                                    }
+                                  },
                           ),
                         ],
                       ),
@@ -656,7 +670,7 @@ String _treeLabelById(String treeId) {
               ),
               const SizedBox(height: 4),
               const Text(
-                'แตะวันที่เพื่อดูงานรักษา (ถ้ามี)',
+                'แตะวันที่เพื่อดูงานรักษา ',
                 style: TextStyle(fontSize: 14, fontWeight: FontWeight.w400, color: Colors.black54),
               ),
               const SizedBox(height: 8),

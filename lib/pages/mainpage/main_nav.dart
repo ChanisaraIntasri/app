@@ -3,14 +3,13 @@ import 'package:persistent_bottom_nav_bar/persistent_bottom_nav_bar.dart';
 
 import 'home.dart';
 import 'share.dart';
-import 'scan_page.dart';
 import 'setting.dart';
 
 // สีหลักต่าง ๆ ของ nav bar
 const kNavBg = Colors.white;                // พื้นแถบเมนู (pill สีขาว)
 const kNavIconActive = Colors.black87;      // ไอคอนที่เลือกอยู่
 const kNavIconInactive = Colors.black45;    // ไอคอนที่ไม่ได้เลือก
-const kScanAccent = Color(0xFFFF7A00);      // สีเน้นสำหรับปุ่มสแกน (ถ้าอยากให้เด่น)
+// (ลบเมนูกล้องออกจากแถบเมนูแล้ว)
 
 class MainNav extends StatefulWidget {
   const MainNav({
@@ -43,13 +42,11 @@ class _MainNavState extends State<MainNav> {
 
   /// ✅ ให้ "หน้า" ตรงกับ "ไอคอน"
   /// 0 = Home icon -> HomePage
-  /// 1 = Camera icon -> push ScanPage (ใช้ dummy ในแท็บ)
-  /// 2 = History icon -> SharePage
-  /// 3 = Settings icon -> SettingPage
+  /// 1 = Leaf icon -> SharePage
+  /// 2 = Settings icon -> SettingPage
   List<Widget> _screens() => [
-        const HomePage(),        // 0 ✅ Home icon = HomePage
-        const SizedBox.shrink(), // 1 dummy สำหรับ Scan (เราจะ push แยก)
-        const SharePage(),       // 2 ✅ History icon = SharePage
+        const HomePage(),  // 0 ✅ Home icon = HomePage
+        const SharePage(), // 1 ✅ Leaf icon = SharePage
         SettingPage(
           initialUsername: _username,
         ),
@@ -62,12 +59,8 @@ class _MainNavState extends State<MainNav> {
           inactiveColorPrimary: kNavIconInactive,
         ),
         PersistentBottomNavBarItem(
-          icon: const Icon(Icons.camera_alt_rounded),
-          activeColorPrimary: kScanAccent,
-          inactiveColorPrimary: kNavIconInactive,
-        ),
-        PersistentBottomNavBarItem(
-          icon: const Icon(Icons.history_rounded),
+          // ✅ เปลี่ยนไอคอนประวัติ -> ไอคอนใบไม้
+          icon: const Icon(Icons.eco_rounded),
           activeColorPrimary: kNavIconActive,
           inactiveColorPrimary: kNavIconInactive,
         ),
@@ -98,22 +91,9 @@ class _MainNavState extends State<MainNav> {
       navBarHeight: 64,
       navBarStyle: NavBarStyle.style6,
 
-      onItemSelected: (index) async {
-        if (index == 1) {
-          await PersistentNavBarNavigator.pushNewScreen(
-            context,
-            screen: const ScanPage(),
-            withNavBar: false,
-            pageTransitionAnimation: PageTransitionAnimation.cupertino,
-          );
-
-          
-          _controller.index = 0;
-          setState(() {});
-        } else {
-          _controller.index = index;
-          setState(() {});
-        }
+      onItemSelected: (index) {
+        _controller.index = index;
+        setState(() {});
       },
     );
   }

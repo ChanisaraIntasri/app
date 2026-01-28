@@ -20,6 +20,7 @@ dependencies:
 
   # Camera
   camera: ^0.10.5+9
+  image_picker: ^1.1.2   # ✅ เพิ่มสำหรับเลือกรูปจากเครื่อง (Gallery)
 
   # Network / API
   http: ^1.2.2

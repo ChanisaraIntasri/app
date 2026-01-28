@@ -56,12 +56,10 @@ bool _isSuccess(dynamic decoded) {
     final success = decoded['success'];
     final status = decoded['status'];
 
-    // ถ้ามีคีย์พวกนี้ → ใช้มันตัดสิน
     if (ok is bool) return ok;
     if (success is bool) return success;
     if (status is bool) return status;
 
-    // ถ้าไม่มีคีย์ ok/success/status เลย → ถือว่า success แล้วค่อยดูว่า list ว่างไหม
     return true;
   }
   return false;
@@ -77,8 +75,9 @@ String _extractErr(dynamic decoded) {
     final sMsg = _s(msg);
     final sDetail = _s(detail);
 
-    // ถ้า map บอกว่าไม่ success → ส่งข้อความ
-    final hasFlag = decoded.containsKey('ok') || decoded.containsKey('success') || decoded.containsKey('status');
+    final hasFlag = decoded.containsKey('ok') ||
+        decoded.containsKey('success') ||
+        decoded.containsKey('status');
     if (hasFlag && !_isSuccess(decoded)) {
       if (sMsg.isNotEmpty) return sMsg;
       if (sErr.isNotEmpty) return sErr;
@@ -86,7 +85,6 @@ String _extractErr(dynamic decoded) {
       return 'request_failed';
     }
 
-    // บาง API ไม่มี ok/success แต่ส่ง error มา
     if (sErr.isNotEmpty && sErr != '0') return sErr;
     if (sMsg.isNotEmpty && sMsg.toLowerCase().contains('error')) return sMsg;
   }
@@ -175,7 +173,15 @@ class DiagnosisHistoryItem {
       id: _toInt(m['diagnosis_history_id'] ?? m['id'] ?? m['history_id']),
       treeId: _toInt(m['tree_id'] ?? m['treeId'] ?? m['orange_tree_id'] ?? m['orangeTreeId']),
       diseaseId: _toInt(m['disease_id'] ?? m['diseaseId'] ?? m['disease_ids'] ?? m['diseaseID']),
-      riskLevelId: (() { final rid = _s(m['risk_level_id'] ?? m['riskLevelId'] ?? m['level_id'] ?? m['risk_levelID'] ?? m['risk_level']); final n = int.tryParse(rid); return (n == null || n <= 0) ? null : n; })(),
+      riskLevelId: (() {
+        final rid = _s(m['risk_level_id'] ??
+            m['riskLevelId'] ??
+            m['level_id'] ??
+            m['risk_levelID'] ??
+            m['risk_level']);
+        final n = int.tryParse(rid);
+        return (n == null || n <= 0) ? null : n;
+      })(),
       totalScore: _toInt(m['total_score'] ?? m['score'] ?? m['totalScore']),
       imageUrl: _pickText(m, ['image_url', 'image', 'image_path', 'imagePath']),
       diagnosedAt: diagnosedAt,
@@ -196,6 +202,8 @@ class DiagnosisHistoryItem {
   String get severityLabel => _severityFromLevelCode(levelCode);
 }
 
+enum _TreeHistoryView { list, detail }
+
 class TreeHistoryPage extends StatefulWidget {
   final CitrusTreeRecord record;
 
@@ -207,6 +215,10 @@ class TreeHistoryPage extends StatefulWidget {
 
 class _TreeHistoryPageState extends State<TreeHistoryPage> {
   late CitrusTreeRecord _record;
+
+  // ✅ เข้าแล้วแสดง “รายการประวัติการสแกน” ก่อน
+  _TreeHistoryView _view = _TreeHistoryView.list;
+  DiagnosisHistoryItem? _selected;
 
   bool _loading = false;
   String _error = '';
@@ -254,20 +266,70 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
     return [];
   }
 
+  // ✅ หา tree_id ให้เจอ + fallback จากชื่อ "ต้นที่ 5"
   int _getTreeIdFromRecord() {
     final dyn = _record as dynamic;
+
+    int _tryParse(dynamic v) {
+      if (v == null) return 0;
+      if (v is int) return v;
+      return int.tryParse(v.toString().trim()) ?? 0;
+    }
+
+    final getters = <dynamic Function()>[
+      () => dyn.treeId,
+      () => dyn.tree_id,
+      () => dyn.treeID,
+      () => dyn.orange_tree_id,
+      () => dyn.orangeTreeId,
+      () => dyn.id,
+      () => dyn.treeNo,
+      () => dyn.tree_no,
+      () => dyn.treeNumber,
+      () => dyn.tree_number,
+      () => dyn.number,
+      () => dyn.index,
+    ];
+
+    for (final g in getters) {
+      try {
+        final id = _tryParse(g());
+        if (id > 0) return id;
+      } catch (_) {}
+    }
+
     try {
-      final v = dyn.treeId;
-      return v is int ? v : int.tryParse(v.toString()) ?? 0;
+      final m = dyn.toMap();
+      if (m is Map) {
+        final keys = [
+          'tree_id',
+          'treeId',
+          'treeID',
+          'orange_tree_id',
+          'orangeTreeId',
+          'id',
+          'tree_no',
+          'treeNo',
+          'tree_number',
+          'treeNumber',
+          'number',
+          'index',
+        ];
+        for (final k in keys) {
+          final id = _tryParse(m[k]);
+          if (id > 0) return id;
+        }
+      }
     } catch (_) {}
+
+    // fallback: "ต้นที่ 5" -> 5
     try {
-      final v = dyn.tree_id;
-      return v is int ? v : int.tryParse(v.toString()) ?? 0;
+      final name = (dyn.name ?? dyn.treeName ?? '').toString();
+      final match = RegExp(r'\d+').firstMatch(name);
+      final id = match == null ? 0 : int.tryParse(match.group(0) ?? '') ?? 0;
+      if (id > 0) return id;
     } catch (_) {}
-    try {
-      final v = dyn.id;
-      return v is int ? v : int.tryParse(v.toString()) ?? 0;
-    } catch (_) {}
+
     return 0;
   }
 
@@ -279,13 +341,11 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
 
     if (_isHttpUrl(p)) return NetworkImage(p);
 
-    // server relative path เช่น uploads/...
     if (!p.contains('://')) {
       final normalized = p.startsWith('/') ? p.substring(1) : p;
       return NetworkImage('$_backendOrigin/$normalized');
     }
 
-    // local file fallback
     final f = File(p);
     if (f.existsSync()) return FileImage(f);
     return null;
@@ -293,12 +353,15 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
 
   Future<void> _loadAll() async {
     await _loadDiagnosisHistory();
-    if (_hist.isNotEmpty) {
-      final latest = _hist.first;
-      await _loadDiseaseInfoByDiseaseId(latest.diseaseId);
-      await _loadAdviceByRiskLevelId(latest.riskLevelId);
+
+    if (!mounted) return;
+    if (_hist.isNotEmpty) _selected ??= _hist.first;
+
+    if (_view == _TreeHistoryView.detail && _selected != null) {
+      await _loadDiseaseInfoByDiseaseId(_selected!.diseaseId);
+      await _loadAdviceByRiskLevelId(_selected!.riskLevelId);
     } else {
-      if (mounted) {
+      if (_hist.isEmpty && mounted) {
         setState(() {
           _description = '-';
           _causes = '-';
@@ -307,6 +370,25 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
         });
       }
     }
+  }
+
+  void _openDetail(DiagnosisHistoryItem it) {
+    setState(() {
+      _selected = it;
+      _view = _TreeHistoryView.detail;
+
+      _description = '-';
+      _causes = '-';
+      _symptom = '-';
+      _adviceText = '-';
+    });
+
+    _loadDiseaseInfoByDiseaseId(it.diseaseId);
+    _loadAdviceByRiskLevelId(it.riskLevelId);
+  }
+
+  void _backToList() {
+    setState(() => _view = _TreeHistoryView.list);
   }
 
   Future<void> _loadDiagnosisHistory() async {
@@ -318,7 +400,7 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
 
     try {
       final treeId = _getTreeIdFromRecord();
-      if (treeId <= 0) throw Exception('ไม่พบ tree_id ใน CitrusTreeRecord');
+      if (treeId <= 0) throw Exception('ไม่พบ tree_id');
 
       final token = await _readToken();
       final url = Uri.parse(_joinApi(API_BASE, '/diagnosis_history/read_diagnosis_history.php'))
@@ -327,9 +409,7 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
         'limit': '100',
       });
 
-      final res = await http
-          .get(url, headers: _headers(token))
-          .timeout(const Duration(seconds: 12));
+      final res = await http.get(url, headers: _headers(token)).timeout(const Duration(seconds: 12));
 
       dynamic decoded;
       try {
@@ -343,14 +423,8 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
       }
 
       final err = _extractErr(decoded);
-      if (err.isNotEmpty && !_isSuccess(decoded)) {
-        throw Exception(err);
-      }
-
-      // ✅ รองรับกรณีไม่มี ok/success/status แต่มี data list
-      if (!_isSuccess(decoded) && err.isNotEmpty) {
-        throw Exception(err);
-      }
+      if (err.isNotEmpty && !_isSuccess(decoded)) throw Exception(err);
+      if (!_isSuccess(decoded) && err.isNotEmpty) throw Exception(err);
 
       final list = _extractList(decoded);
       final items = list
@@ -388,11 +462,9 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
       final token = await _readToken();
       final url = Uri.parse(_joinApi(API_BASE, '/diseases/read_diseases.php'));
 
-      final res = await http
-          .get(url, headers: _headers(token))
-          .timeout(const Duration(seconds: 12));
+      final res = await http.get(url, headers: _headers(token)).timeout(const Duration(seconds: 12));
 
-      dynamic decoded = jsonDecode(res.body);
+      final decoded = jsonDecode(res.body);
       final err = _extractErr(decoded);
       if (err.isNotEmpty && !_isSuccess(decoded)) throw Exception(err);
 
@@ -413,9 +485,22 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
 
       if (found != null) {
         setState(() {
-          final desc = _pickText(found!, ['description', 'disease_desc', 'desc', 'detail', 'disease_description']);
+          final desc = _pickText(found!, [
+            'description',
+            'disease_desc',
+            'desc',
+            'detail',
+            'disease_description',
+          ]);
           final causes = _pickText(found!, ['causes', 'cause', 'disease_causes', 'disease_cause']);
-          final sym = _pickText(found!, ['symptom', 'symptoms', 'disease_symptom', 'disease_symptoms', 'signs', 'disease_signs']);
+          final sym = _pickText(found!, [
+            'symptom',
+            'symptoms',
+            'disease_symptom',
+            'disease_symptoms',
+            'signs',
+            'disease_signs',
+          ]);
           _description = desc.isEmpty ? '-' : desc;
           _causes = causes.isEmpty ? '-' : causes;
           _symptom = sym.isEmpty ? '-' : sym;
@@ -458,20 +543,21 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
       final url = Uri.parse(_joinApi(API_BASE, '/treatments/read_treatments.php'))
           .replace(queryParameters: {'risk_level_id': riskLevelId.toString()});
 
-      final res = await http
-          .get(url, headers: _headers(token))
-          .timeout(const Duration(seconds: 12));
+      final res = await http.get(url, headers: _headers(token)).timeout(const Duration(seconds: 12));
 
-      dynamic decoded = jsonDecode(res.body);
+      final decoded = jsonDecode(res.body);
       final err = _extractErr(decoded);
       if (err.isNotEmpty && !_isSuccess(decoded)) throw Exception(err);
 
       final list = _extractList(decoded);
       String text = '-';
       if (list.isNotEmpty && list.first is Map) {
-        text = _s((list.first as Map)['advice_text'] ?? (list.first as Map)['advice'] ?? (list.first as Map)['treatment'] ?? (list.first as Map)['treatment_text']);
+        text = _s((list.first as Map)['advice_text'] ??
+            (list.first as Map)['advice'] ??
+            (list.first as Map)['treatment'] ??
+            (list.first as Map)['treatment_text']);
       }
-      if (text.trim().isEmpty) text = '-';
+      if (text.isEmpty) text = '-';
 
       _adviceCache[riskLevelId] = text;
 
@@ -489,10 +575,64 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
     }
   }
 
+  // ✅ การ์ดรายการประวัติการสแกน (เหมือนภาพ)
+  Widget _historyCard(DiagnosisHistoryItem it) {
+    final date = it.diagnosedAt != null ? _fmtDate(it.diagnosedAt!) : '-';
+    final sev = it.severityLabel.isNotEmpty ? it.severityLabel : '-';
+
+    return InkWell(
+      onTap: () => _openDetail(it),
+      borderRadius: BorderRadius.circular(22),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 14),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(22),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.04),
+              blurRadius: 10,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 54,
+              height: 54,
+              decoration: BoxDecoration(
+                color: const Color(0xFFEAF2EC),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: const Icon(Icons.spa, color: kPrimaryGreen, size: 28),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    it.diseaseLabel,
+                    style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '$date  •  ระดับ: $sev  •  คะแนน: ${it.totalScore}',
+                    style: const TextStyle(color: Colors.black54, fontSize: 13),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final latest = _hist.isNotEmpty ? _hist.first : null;
-
     final titleName = (() {
       try {
         return (_record as dynamic).name as String;
@@ -501,187 +641,173 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
       }
     })();
 
-    final showDisease = latest != null
-        ? latest.diseaseLabel
-        : (_record.disease.trim().isEmpty ? '-' : _record.disease.trim());
+    return WillPopScope(
+      onWillPop: () async {
+        if (_view == _TreeHistoryView.detail) {
+          _backToList();
+          return false;
+        }
+        return true;
+      },
+      child: Scaffold(
+        backgroundColor: kBg,
+        appBar: AppBar(
+          backgroundColor: kPrimaryGreen,
+          foregroundColor: Colors.white,
+          title: Text('ประวัติต้นส้ม: $titleName'),
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: () {
+              if (_view == _TreeHistoryView.detail) {
+                _backToList();
+              } else {
+                Navigator.pop(context);
+              }
+            },
+          ),
+          actions: [
+            IconButton(onPressed: _loadAll, icon: const Icon(Icons.refresh)),
+          ],
+        ),
+        body: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : _error.isNotEmpty
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Text(_error, textAlign: TextAlign.center),
+                    ),
+                  )
+                : (_view == _TreeHistoryView.list ? _buildListView() : _buildDetailView()),
+      ),
+    );
+  }
 
-    final showDate = latest?.diagnosedAt != null
-        ? _fmtDate(latest!.diagnosedAt!)
-        : (_record.lastScanAt != null ? _fmtDate(_record.lastScanAt!) : '-');
+  // ✅ หน้าแรก: แสดงรายการประวัติการสแกนก่อน
+  Widget _buildListView() {
+    if (_hist.isEmpty) {
+      return const Center(child: Text('ยังไม่มีประวัติการสแกน'));
+    }
 
-    final showSeverity = latest != null
-        ? latest.severityLabel
-        : _severityFromLevelCode(_record.severity);
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+      children: [
+        const Text('ประวัติการสแกน', style: TextStyle(fontWeight: FontWeight.w900)),
+        const SizedBox(height: 10),
+        ..._hist.map(_historyCard),
+      ],
+    );
+  }
 
-    final img = latest != null && latest.imageUrl.trim().isNotEmpty
-        ? _imgProvider(latest.imageUrl)
+  // ✅ หน้ารายละเอียด: ลบ "ประวัติการสแกน" ออกจากหน้ารายละเอียดแล้ว
+  Widget _buildDetailView() {
+    final selected = _selected ?? (_hist.isNotEmpty ? _hist.first : null);
+    if (selected == null) {
+      return const Center(child: Text('ยังไม่มีประวัติในฐานข้อมูล'));
+    }
+
+    final showDisease = selected.diseaseLabel;
+    final showDate = selected.diagnosedAt != null ? _fmtDate(selected.diagnosedAt!) : '-';
+    final showSeverity = selected.severityLabel;
+
+    final img = selected.imageUrl.trim().isNotEmpty
+        ? _imgProvider(selected.imageUrl)
         : (_record.lastScanImagePath != null ? _imgProvider(_record.lastScanImagePath) : null);
 
-    return Scaffold(
-      backgroundColor: kBg,
-      appBar: AppBar(
-        backgroundColor: kPrimaryGreen,
-        foregroundColor: Colors.white,
-        title: Text('ประวัติต้นส้ม: $titleName'),
-        actions: [
-          IconButton(onPressed: _loadAll, icon: const Icon(Icons.refresh)),
-        ],
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _error.isNotEmpty
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(16),
-                    child: Text(_error, textAlign: TextAlign.center),
-                  ),
-                )
-              : ListView(
-                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
-                  children: [
-                    // รูปล่าสุด
-                    if (img != null)
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(18),
-                        child: AspectRatio(
-                          aspectRatio: 4 / 3,
-                          child: Image(
-                            image: img,
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => Container(
-                              color: kCardBg,
-                              alignment: Alignment.center,
-                              child: const Text('ไม่สามารถแสดงรูปได้'),
-                            ),
-                          ),
-                        ),
-                      )
-                    else
-                      Container(
-                        height: 180,
-                        decoration: BoxDecoration(
-                          color: kCardBg,
-                          borderRadius: BorderRadius.circular(18),
-                        ),
-                        alignment: Alignment.center,
-                        child: const Text('ยังไม่มีรูปการสแกน'),
-                      ),
-
-                    const SizedBox(height: 14),
-
-                    // ข้อมูลโรค + รายละเอียด
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: kCardBg,
-                        borderRadius: BorderRadius.circular(18),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('ชื่อโรค', style: TextStyle(fontWeight: FontWeight.w800)),
-                          const SizedBox(height: 6),
-                          Text('โรค: $showDisease'),
-
-                          const SizedBox(height: 10),
-                          Text('คำอธิบายโรค: $_description'),
-                          const SizedBox(height: 6),
-                          Text('สาเหตุ: $_causes'),
-                          const SizedBox(height: 6),
-                          Text('อาการ: $_symptom'),
-
-                          const SizedBox(height: 10),
-                          Text('วันที่วินิจฉัย: $showDate'),
-                          const SizedBox(height: 4),
-                          Text('ระดับความรุนแรง: $showSeverity'),
-
-                          if (_loadingDiseaseInfo) ...[
-                            const SizedBox(height: 10),
-                            const Text('กำลังโหลดข้อมูลโรคจากฐานข้อมูล...',
-                                style: TextStyle(color: Colors.black54)),
-                          ],
-                        ],
-                      ),
-                    ),
-
-                    const SizedBox(height: 14),
-
-                    // คำแนะนำการรักษา
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: kCardBg,
-                        borderRadius: BorderRadius.circular(18),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('คำแนะนำการรักษา', style: TextStyle(fontWeight: FontWeight.w800)),
-                          const SizedBox(height: 8),
-                          if (_loadingAdvice)
-                            const Text('กำลังโหลดคำแนะนำ...', style: TextStyle(color: Colors.black54))
-                          else
-                            Text(_adviceText.trim().isEmpty ? '-' : _adviceText),
-                        ],
-                      ),
-                    ),
-
-                    const SizedBox(height: 18),
-                    const Text('ประวัติการสแกน', style: TextStyle(fontWeight: FontWeight.w900)),
-                    const SizedBox(height: 10),
-
-                    if (_hist.isEmpty)
-                      const Text('ยังไม่มีประวัติในฐานข้อมูล')
-                    else
-                      ..._hist.map((it) {
-                        final date = it.diagnosedAt != null ? _fmtDate(it.diagnosedAt!) : '-';
-                        final sev = it.severityLabel;
-
-                        return Container(
-                          margin: const EdgeInsets.only(bottom: 10),
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(16),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.05),
-                                blurRadius: 10,
-                                offset: const Offset(0, 6),
-                              ),
-                            ],
-                          ),
-                          child: Row(
-                            children: [
-                              Container(
-                                width: 44,
-                                height: 44,
-                                decoration: BoxDecoration(
-                                  color: kPrimaryGreen.withOpacity(0.10),
-                                  borderRadius: BorderRadius.circular(14),
-                                ),
-                                child: const Icon(Icons.spa, color: kPrimaryGreen),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(it.diseaseLabel, style: const TextStyle(fontWeight: FontWeight.w800)),
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      '$date  •  ระดับ: $sev  •  คะแนน: ${it.totalScore}',
-                                      style: TextStyle(color: Colors.grey, fontSize: 12),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        );
-                      }),
-                  ],
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
+      children: [
+        // รูปล่าสุด/ของรายการที่เลือก
+        if (img != null)
+          ClipRRect(
+            borderRadius: BorderRadius.circular(18),
+            child: AspectRatio(
+              aspectRatio: 4 / 3,
+              child: Image(
+                image: img,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Container(
+                  color: kCardBg,
+                  alignment: Alignment.center,
+                  child: const Text('ไม่สามารถแสดงรูปได้'),
                 ),
+              ),
+            ),
+          )
+        else
+          Container(
+            height: 180,
+            decoration: BoxDecoration(
+              color: kCardBg,
+              borderRadius: BorderRadius.circular(18),
+            ),
+            alignment: Alignment.center,
+            child: const Text('ยังไม่มีรูปการสแกน'),
+          ),
+
+        const SizedBox(height: 14),
+
+        // ข้อมูลโรค + รายละเอียด (เดิม)
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: kCardBg,
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('ชื่อโรค', style: TextStyle(fontWeight: FontWeight.w800)),
+              const SizedBox(height: 6),
+              Text('โรค: $showDisease'),
+
+              const SizedBox(height: 10),
+              Text('คำอธิบายโรค: $_description'),
+              const SizedBox(height: 6),
+              Text('สาเหตุ: $_causes'),
+              const SizedBox(height: 6),
+              Text('อาการ: $_symptom'),
+
+              const SizedBox(height: 10),
+              Text('วันที่วินิจฉัย: $showDate'),
+              const SizedBox(height: 4),
+              Text('ระดับความรุนแรง: $showSeverity'),
+
+              if (_loadingDiseaseInfo) ...[
+                const SizedBox(height: 10),
+                const Text(
+                  'กำลังโหลดข้อมูลโรคจากฐานข้อมูล...',
+                  style: TextStyle(color: Colors.black54),
+                ),
+              ],
+            ],
+          ),
+        ),
+
+        const SizedBox(height: 14),
+
+        // คำแนะนำการรักษา (เดิม)
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: kCardBg,
+            borderRadius: BorderRadius.circular(18),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('คำแนะนำการรักษา', style: TextStyle(fontWeight: FontWeight.w800)),
+              const SizedBox(height: 8),
+              if (_loadingAdvice)
+                const Text('กำลังโหลดคำแนะนำ...', style: TextStyle(color: Colors.black54))
+              else
+                Text(_adviceText.trim().isEmpty ? '-' : _adviceText),
+            ],
+          ),
+        ),
+
+        const SizedBox(height: 10),
+      ],
     );
   }
 }
