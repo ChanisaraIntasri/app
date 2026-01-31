@@ -131,6 +131,9 @@ class _HomePageState extends State<HomePage> {
   bool _loadingReminders = false;
   String _lastRefreshStamp = '';
 
+  // ใช้ API base จาก prefs (key: api_base_url) เพื่อให้สอดคล้องกับหน้าที่อื่น ๆ
+  String _apiBaseUrl = API_BASE;
+
   // key: tree_id -> {disease,severity,diagnosedAt,...}
   Map<String, dynamic> _lastDiagnosisByTreeId = {};
 
@@ -182,9 +185,26 @@ class _HomePageState extends State<HomePage> {
         prefs.getString('auth_token');
   }
 
-  Map<String, String> _headers(String? token) => {
+
+  Future<void> _refreshApiBaseFromPrefs() async {
+    final prefs = await SharedPreferences.getInstance();
+    final p = (prefs.getString('api_base_url') ?? '').trim();
+    var base = p.isNotEmpty ? p : API_BASE;
+    // normalize trailing slash
+    if (base.endsWith('/')) base = base.substring(0, base.length - 1);
+    _apiBaseUrl = base;
+  }
+
+  
+  String _bearerValue(String token) {
+    final t = token.trim();
+    if (t.toLowerCase().startsWith('bearer ')) return t;
+    return 'Bearer $t';
+  }
+
+Map<String, String> _headers(String? token) => {
         'Accept': 'application/json',
-        if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
+        if (token != null && token.trim().isNotEmpty) 'Authorization': _bearerValue(token),
       };
 
   Map<String, String> _headersJson(String? token) => {
@@ -232,9 +252,11 @@ class _HomePageState extends State<HomePage> {
     _watcher?.cancel();
     _watcher = Timer.periodic(const Duration(milliseconds: 800), (_) async {
       final prefs = await SharedPreferences.getInstance();
-      final ts = prefs.getInt('app_refresh_ts_v1')?.toString() ?? '';
-      if (ts.isNotEmpty && ts != _lastRefreshStamp) {
-        _lastRefreshStamp = ts;
+      final ts1 = prefs.getInt('app_refresh_ts_v1')?.toString() ?? '';
+      final ts2 = prefs.getInt('home_calendar_refresh_ts')?.toString() ?? '';
+      final stamp = '$ts1|$ts2';
+      if (stamp != _lastRefreshStamp) {
+        _lastRefreshStamp = stamp;
         await _reloadFromPrefs();
         await _loadRemindersForMonth(_focusedDay);
       }
@@ -244,6 +266,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _reloadFromPrefs() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      await _refreshApiBaseFromPrefs();
       final raw = prefs.getString('tree_last_diagnosis_v1') ?? '{}';
       final decoded = jsonDecode(raw);
       if (!mounted) return;
@@ -274,6 +297,7 @@ class _HomePageState extends State<HomePage> {
     _loadingReminders = true;
 
     try {
+      await _refreshApiBaseFromPrefs();
       final token = await _readToken();
       if (token == null || token.isEmpty) {
         _loadingReminders = false;
@@ -285,7 +309,7 @@ class _HomePageState extends State<HomePage> {
 
       final uri = Uri.parse(
         _joinApi(
-          API_BASE,
+          _apiBaseUrl,
           '/care_reminders/read_care_reminders.php?date_from=${_ymd(first)}&date_to=${_ymd(last)}',
         ),
       );
@@ -311,7 +335,18 @@ class _HomePageState extends State<HomePage> {
 
         final reminderId = _toInt(m['reminder_id'] ?? m['id']);
         final treeId = _s(m['tree_id']);
-        final note = _s(m['note']);
+        String note = _s(m['note']);
+        final chemicalName = _s(m['chemical_name']);
+        if (chemicalName.isNotEmpty) {
+          final n = note.trim();
+          if (n.isEmpty) {
+            note = chemicalName;
+          } else if (!n.contains(chemicalName)) {
+            note = '$n ($chemicalName)';
+          } else {
+            note = n;
+          }
+        }
 
         final rawDate = _s(m['reminder_date']);
         DateTime? dt;
@@ -391,10 +426,11 @@ class _HomePageState extends State<HomePage> {
 
     final token = await _readToken();
     if (token == null || token.isEmpty) return;
+    await _refreshApiBaseFromPrefs();
 
     // update DB
     try {
-      final uri = Uri.parse(_joinApi(API_BASE, '/care_reminders/update_care_reminders.php'));
+      final uri = Uri.parse(_joinApi(_apiBaseUrl, '/care_reminders/update_care_reminders.php'));
       final res = await http
           .post(
             uri,

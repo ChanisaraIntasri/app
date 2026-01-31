@@ -806,7 +806,7 @@ class _DiseaseQuestionsPageState extends State<DiseaseQuestionsPage> {
             diseaseName: widget.diseaseName,
             diagnosisHistoryId: diagnosisHistoryId,
             treatmentId: treatmentId,
-            totalScore: total,
+            totalScore: total.round(),
             riskLevelId: riskLevelId.isEmpty ? '-' : riskLevelId,
             riskLevelName:
                 riskLevelName.isEmpty ? 'ไม่พบระดับความรุนแรง' : riskLevelName,
@@ -1127,37 +1127,60 @@ Future<void> _pickSingleChoiceAndMaybeNext(String dqid, String choiceId) async {
       );
     }
 
-    // ✅ single choice
-
-    // ✅ single choice → ปุ่มแบบในภาพ
+    
+    // ✅ single choice (หน้าตาเหมือน multi ตามภาพ แต่เลือกได้ 1 ข้อ)
     final selectedId = _s(answers[dqid]);
 
     return Column(
       children: choices.map((c) {
         final isSelected = selectedId == c.id;
-        return Padding(
-          padding: const EdgeInsets.only(bottom: 12),
-          child: SizedBox(
-            width: double.infinity,
-            height: 54,
-            child: OutlinedButton(
-              style: OutlinedButton.styleFrom(
-                foregroundColor: kPrimaryGreen,
-                backgroundColor: isSelected ? kPrimaryGreen.withOpacity(0.08) : Colors.transparent,
-                side: const BorderSide(color: kPrimaryGreen, width: 2),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
+
+        return GestureDetector(
+          onTap: () {
+            if (autoAdvance) {
+              _pickSingleChoiceAndMaybeNext(dqid, c.id);
+            } else {
+              setState(() => answers[dqid] = c.id);
+            }
+          },
+          child: Container(
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: isSelected ? kPrimaryGreen : kPrimaryGreen.withOpacity(0.65),
+                width: 1.6,
               ),
-              onPressed: () {
-                if (autoAdvance) {
-                  _pickSingleChoiceAndMaybeNext(dqid, c.id);
-                } else {
-                  setState(() => answers[dqid] = c.id);
-                }
-              },
-              child: Text(
-                c.label,
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
-              ),
+              color: isSelected ? kPrimaryGreen.withOpacity(0.10) : Colors.white,
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 22,
+                  height: 22,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(4),
+                    border: Border.all(
+                      color: isSelected ? kPrimaryGreen : kPrimaryGreen.withOpacity(0.8),
+                      width: 2,
+                    ),
+                    color: isSelected ? kPrimaryGreen : Colors.transparent,
+                  ),
+                  child: isSelected ? const Icon(Icons.check, size: 16, color: Colors.white) : null,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    c.label,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                      color: kPrimaryGreen,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         );

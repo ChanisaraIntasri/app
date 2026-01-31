@@ -18,7 +18,6 @@ class _SignInScreenState extends State<SignInScreen> {
   static const String kLoginUrl =
       'https://latricia-nonodoriferous-snoopily.ngrok-free.dev/crud/api/auth/login.php';
 
-  // ✅ SharedPreferences keys (ต้องใช้ให้ตรงกันทั้งแอป)
   static const String kPrefTokenKey = 'token';
   static const String kPrefTokenLegacyKey = 'auth_token';
 
@@ -179,6 +178,9 @@ class _SignInScreenState extends State<SignInScreen> {
           onTap: () => FocusScope.of(context).unfocus(),
           child: LayoutBuilder(
             builder: (context, constraints) {
+              final double topGap =
+                  (constraints.maxHeight * 0.12).clamp(56.0, 120.0);
+
               return SingleChildScrollView(
                 keyboardDismissBehavior:
                     ScrollViewKeyboardDismissBehavior.onDrag,
@@ -192,9 +194,11 @@ class _SignInScreenState extends State<SignInScreen> {
                     child: Form(
                       key: _formKey,
                       child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisAlignment: MainAxisAlignment.start, // ✅ ขยับขึ้น
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
+                          SizedBox(height: topGap), // ✅ เว้นระยะด้านบนแบบสมดุล
+
                           const Text(
                             'เข้าสู่ระบบ',
                             textAlign: TextAlign.center,
@@ -261,7 +265,6 @@ class _SignInScreenState extends State<SignInScreen> {
                             },
                           ),
 
-                          // ✅ เว้นระยะให้สมส่วน (เหมือนกันทั้ง 2 หน้า)
                           const SizedBox(height: 16),
 
                           SizedBox(
@@ -297,7 +300,6 @@ class _SignInScreenState extends State<SignInScreen> {
 
                           const SizedBox(height: 16),
 
-                          // ✅ เปลี่ยนจากปุ่มเป็นข้อความ + ไม่มีขีดเส้นใต้
                           Center(
                             child: Wrap(
                               alignment: WrapAlignment.center,
@@ -334,6 +336,8 @@ class _SignInScreenState extends State<SignInScreen> {
                               ],
                             ),
                           ),
+
+                          const SizedBox(height: 24),
                         ],
                       ),
                     ),

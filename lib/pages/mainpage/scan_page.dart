@@ -16,7 +16,7 @@ const kPrimaryGreen = Color(0xFF005E33);
 // ====== ตั้งค่า API โมเดล ======
 const String kModelApiBase = String.fromEnvironment(
   'MODEL_API_BASE',
-  defaultValue: 'https://lay-planning-actions-textbooks.trycloudflare.com',
+  defaultValue: 'https://updating-chamber-relax-rpm.trycloudflare.com',
 );
 const String kModelPredictPath = '/predict';
 const bool kUseRealModelApi = true;

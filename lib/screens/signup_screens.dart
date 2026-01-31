@@ -145,8 +145,10 @@ class _SignUpScreenState extends State<SignUpScreen> {
                     ),
                     child: Form(
                       key: _formKey,
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
+                      child: Transform.translate(
+                        offset: const Offset(0, -28),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
                           const Text(
@@ -302,6 +304,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                             ),
                           ),
                         ],
+                      ),
                       ),
                     ),
                   ),

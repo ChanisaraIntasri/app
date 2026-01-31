@@ -6,7 +6,7 @@ import 'package:persistent_bottom_nav_bar/persistent_bottom_nav_bar.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'disease_questions_page.dart';
+import 'orchard_management_questions_page.dart';
 
 const kPrimaryGreen = Color(0xFF005E33);
 const kPageBg = Color(0xFFFFFFFF);
@@ -25,10 +25,10 @@ String _joinApi(String base, String path) {
 String _s(dynamic v) => (v ?? '').toString().trim();
 
 class DiseaseDiagnosisPage extends StatefulWidget {
-  final String treeId; // ✅ required
+  final String treeId;
   final String? treeName;
 
-  final String diseaseId; // ✅ required
+  final String diseaseId;
   final String? diseaseNameTh;
   final String? diseaseNameEn;
 
@@ -62,6 +62,9 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
   bool _openDesc = false;
   bool _openCause = false;
   bool _openSymptoms = false;
+
+  // ✅ ป้องกันยิงซ้ำ (กัน reload/เปิดหน้าใหม่ซ้อน)
+  bool _scanImageSaveAttempted = false;
 
   Future<String?> _readToken() async {
     final prefs = await SharedPreferences.getInstance();
@@ -121,7 +124,6 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
     try {
       final token = await _readToken();
 
-      // ลอง readone ก่อน (ถ้ามี endpoint นี้)
       Map<String, dynamic>? data;
       try {
         final url = Uri.parse(
@@ -165,21 +167,69 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
     }
   }
 
+  // ✅ บันทึกรูปหลังสแกนเสร็จทันที (อัปโหลดไป diagnosis_history)
+  Future<void> _saveScanImageToDiagnosisHistory() async {
+    if (_scanImageSaveAttempted) return;
+    _scanImageSaveAttempted = true;
+
+    final file = widget.userImageFile;
+    if (file == null) return;
+    if (!file.existsSync()) return;
+
+    // tree_id / disease_id ต้องเป็นตัวเลข (PHP validate ด้วย ctype_digit)
+    if (widget.treeId.trim().isEmpty || widget.diseaseId.trim().isEmpty) return;
+
+    try {
+      final token = await _readToken();
+      if (token == null || token.isEmpty) return;
+
+      final uri = Uri.parse(_joinApi(API_BASE, '/diagnosis_history/create_diagnosis_history.php'));
+
+      final req = http.MultipartRequest('POST', uri);
+      req.headers.addAll(_headers(token));
+
+      req.fields['tree_id'] = widget.treeId.toString();
+      req.fields['disease_id'] = widget.diseaseId.toString();
+
+      // field ต้องชื่อ image_file ตาม create_diagnosis_history.php
+      req.files.add(await http.MultipartFile.fromPath('image_file', file.path));
+
+      final streamed = await req.send().timeout(const Duration(seconds: 20));
+      final body = await streamed.stream.bytesToString();
+
+      // ไม่กระทบ UI: แค่พยายาม decode (กันกรณี backend เผลอส่งไม่ใช่ JSON)
+      try {
+        jsonDecode(body);
+      } catch (_) {
+        // ถ้าอยาก debug:
+        // print('saveScanImage invalid_json: $body');
+      }
+    } catch (e) {
+      // ถ้าอยาก debug:
+      // print('saveScanImage error: $e');
+    }
+  }
+
   @override
   void initState() {
     super.initState();
     name = widget.diseaseNameTh ?? widget.diseaseNameEn ?? '';
     _load();
+
+    // ✅ อัปโหลดรูปหลังสแกนทันที (ไม่รอ ไม่บล็อก UI)
+    Future.microtask(_saveScanImageToDiagnosisHistory);
   }
 
+  // ✅ แก้ไข: เพิ่มความสูงเป็น 200 และตั้งค่า clipBehavior เพื่อให้รูปเต็มกรอบ
   Widget _imageBox({required Widget child}) {
     return Container(
-      height: 155,
+      height: 200,
       decoration: BoxDecoration(
         color: const Color(0xFFF6F6F6),
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: const Color(0xFFE6E6E6)),
       ),
+      clipBehavior: Clip.antiAlias, // ตัดขอบรูปภาพให้โค้งตาม Container
       child: Center(child: child),
     );
   }
@@ -258,10 +308,9 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
         ? name.trim()
         : (widget.diseaseNameTh ?? widget.diseaseNameEn ?? '-');
 
-    // ✅ เปิดหน้า Questions แบบ "เต็มจอ" เพื่อซ่อนแถบเมนูด้านล่าง (Persistent Bottom Nav)
     await PersistentNavBarNavigator.pushNewScreen(
       context,
-      screen: DiseaseQuestionsPage(
+      screen: OrchardManagementQuestionsPage(
         treeId: widget.treeId,
         treeName: widget.treeName,
         diseaseId: widget.diseaseId,
@@ -311,16 +360,14 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
                   Expanded(
                     child: _imageBox(
                       child: (widget.compareImageUrl == null || widget.compareImageUrl!.isEmpty)
-                          ? const Icon(Icons.image_outlined, size: 44, color: Colors.black38)
-                          : ClipRRect(
-                              borderRadius: BorderRadius.circular(18),
-                              child: Image.network(
-                                widget.compareImageUrl!,
-                                fit: BoxFit.cover,
-                                width: double.infinity,
-                                height: double.infinity,
-                                errorBuilder: (_, __, ___) => const Icon(Icons.broken_image_outlined, size: 44, color: Colors.black38),
-                              ),
+                          ? const Icon(Icons.image_outlined, size: 50, color: Colors.black38)
+                          : Image.network(
+                              widget.compareImageUrl!,
+                              fit: BoxFit.cover, // ✅ แก้ไข: ขยายรูปให้เต็มพื้นที่กรอบ
+                              width: double.infinity,
+                              height: double.infinity,
+                              errorBuilder: (_, __, ___) =>
+                                  const Icon(Icons.broken_image_outlined, size: 50, color: Colors.black38),
                             ),
                     ),
                   ),
@@ -328,16 +375,18 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
                   Expanded(
                     child: _imageBox(
                       child: (widget.userImageFile == null)
-                          ? const Icon(Icons.image_outlined, size: 44, color: Colors.black38)
-                          : ClipRRect(
-                              borderRadius: BorderRadius.circular(18),
-                              child: Image.file(widget.userImageFile!, fit: BoxFit.cover),
+                          ? const Icon(Icons.image_outlined, size: 50, color: Colors.black38)
+                          : Image.file(
+                              widget.userImageFile!,
+                              fit: BoxFit.cover, // ✅ แก้ไข: ขยายรูปให้เต็มพื้นที่กรอบ
+                              width: double.infinity,
+                              height: double.infinity,
                             ),
                     ),
                   ),
                 ],
               ),
-              const SizedBox(height: 14),
+              const SizedBox(height: 20),
 
               if (error.isNotEmpty)
                 Container(
@@ -356,7 +405,7 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
                 'ชื่อโรค : $dn',
                 style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 16),
 
               _sectionCard(
                 title: 'คำอธิบายโรค',
@@ -380,7 +429,7 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
                 icon: Icons.healing_outlined,
               ),
 
-              const SizedBox(height: 8),
+              const SizedBox(height: 12),
 
               SizedBox(
                 width: double.infinity,
@@ -389,6 +438,7 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
                   style: ElevatedButton.styleFrom(
                     backgroundColor: kPrimaryGreen,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                    elevation: 0,
                   ),
                   onPressed: loading ? null : _goQuestions,
                   child: const Text(

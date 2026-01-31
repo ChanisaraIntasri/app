@@ -112,6 +112,16 @@ class DiagnosisHistoryItem {
   final String imageUrl;
   final DateTime? diagnosedAt;
 
+  // ✅ สถานะการรักษา (คำนวณจาก care_reminders ที่ผูกด้วย diagnosis_history_id)
+  // โค้ดที่ backend ส่งมา: no_plan | in_progress | done
+  final String treatmentStatus;
+  final String treatmentStatusText;
+  final int remindersTotal;
+  final int remindersDone;
+
+  // ✅ ถ้ามีการบันทึกคำแนะนำที่ resolve แล้วลงใน diagnosis_history ให้ดึงมาใช้ก่อน
+  final String adviceText;
+
   final String diseaseTh;
   final String diseaseEn;
   final String treeName;
@@ -125,6 +135,11 @@ class DiagnosisHistoryItem {
     required this.totalScore,
     required this.imageUrl,
     required this.diagnosedAt,
+    required this.treatmentStatus,
+    required this.treatmentStatusText,
+    required this.remindersTotal,
+    required this.remindersDone,
+    required this.adviceText,
     required this.diseaseTh,
     required this.diseaseEn,
     required this.treeName,
@@ -169,6 +184,58 @@ class DiagnosisHistoryItem {
 
     final diagnosedAt = _toDate(m['diagnosed_at'] ?? m['created_at'] ?? m['createdAt']);
 
+    final adviceText = _pickText(m, [
+      'advice_text',
+      'advice',
+      'treatment_advice',
+      'treatment_text',
+      'recommendation',
+      'resolved_advice_text',
+      'adviceText',
+    ]);
+
+    // ✅ สถานะจาก backend (ถ้ามี)
+    final statusCode = _pickText(m, [
+      'treatment_status',
+      'treatmentStatus',
+      'care_status',
+      'status',
+      'status_code',
+    ]);
+
+    final statusText = _pickText(m, [
+      'treatment_status_text',
+      'treatmentStatusText',
+      'status_text',
+      'care_status_text',
+      'statusText',
+    ]);
+
+    final remindersTotal = _toInt(m['reminders_total'] ?? m['total_reminders'] ?? m['care_total']);
+    final remindersDone = _toInt(m['reminders_done'] ?? m['done_reminders'] ?? m['care_done']);
+
+    String computedCode = statusCode;
+    if (computedCode.trim().isEmpty) {
+      if (remindersTotal <= 0) {
+        computedCode = 'no_plan';
+      } else if (remindersDone >= remindersTotal) {
+        computedCode = 'done';
+      } else {
+        computedCode = 'in_progress';
+      }
+    }
+
+    String computedText = statusText;
+    if (computedText.trim().isEmpty) {
+      if (computedCode == 'done') {
+        computedText = 'รักษาเสร็จแล้ว';
+      } else if (computedCode == 'in_progress') {
+        computedText = 'กำลังรักษา';
+      } else {
+        computedText = '-';
+      }
+    }
+
     return DiagnosisHistoryItem(
       id: _toInt(m['diagnosis_history_id'] ?? m['id'] ?? m['history_id']),
       treeId: _toInt(m['tree_id'] ?? m['treeId'] ?? m['orange_tree_id'] ?? m['orangeTreeId']),
@@ -185,6 +252,11 @@ class DiagnosisHistoryItem {
       totalScore: _toInt(m['total_score'] ?? m['score'] ?? m['totalScore']),
       imageUrl: _pickText(m, ['image_url', 'image', 'image_path', 'imagePath']),
       diagnosedAt: diagnosedAt,
+      treatmentStatus: computedCode,
+      treatmentStatusText: computedText,
+      remindersTotal: remindersTotal,
+      remindersDone: remindersDone,
+      adviceText: adviceText,
       diseaseTh: diseaseTh,
       diseaseEn: diseaseEn,
       treeName: treeName,
@@ -200,6 +272,19 @@ class DiagnosisHistoryItem {
   }
 
   String get severityLabel => _severityFromLevelCode(levelCode);
+
+  // ✅ ใช้โชว์ในรายการประวัติ (ตามภาพ)
+  String get statusLabel {
+    final t = treatmentStatusText.trim();
+    if (t.isEmpty || t == '-' || t.toLowerCase() == 'null') return '';
+    return t;
+  }
+
+  Color get statusColor {
+    if (treatmentStatus == 'done') return kPrimaryGreen;
+    if (treatmentStatus == 'in_progress') return const Color(0xFFC24C4C);
+    return Colors.black45;
+  }
 }
 
 enum _TreeHistoryView { list, detail }
@@ -223,7 +308,11 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
   bool _loading = false;
   String _error = '';
 
-  final String _backendOrigin = _backendOriginFromApiBase(API_BASE);
+  // ✅ ใช้ API base จาก prefs (เหมือนหน้าอื่น ๆ) เพื่อไม่ให้ประวัติรายต้น
+  // หลุดไปคนละโดเมนตอนเปลี่ยน ngrok/host
+  String _apiBaseUrl = API_BASE;
+  String get _backendOrigin => _backendOriginFromApiBase(_apiBaseUrl);
+  bool _bootstrapping = true;
 
   List<DiagnosisHistoryItem> _hist = [];
 
@@ -240,7 +329,26 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
   void initState() {
     super.initState();
     _record = widget.record;
-    _loadAll();
+    _bootstrap();
+  }
+
+  Future<void> _bootstrap() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final prefBase = (prefs.getString('api_base_url') ?? '').trim();
+      if (prefBase.isNotEmpty) {
+        _apiBaseUrl = prefBase;
+      }
+    } catch (_) {
+      // ignore
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _bootstrapping = false;
+    });
+
+    await _loadAll();
   }
 
   Future<String?> _readToken() async {
@@ -380,11 +488,17 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
       _description = '-';
       _causes = '-';
       _symptom = '-';
-      _adviceText = '-';
+      _loadingAdvice = false;
+      // ✅ ถ้ามีคำแนะนำที่บันทึกไว้กับประวัติแล้ว ให้โชว์อันนี้ก่อน
+      final savedAdvice = it.adviceText.trim();
+      _adviceText = savedAdvice.isNotEmpty ? savedAdvice : '-';
     });
 
     _loadDiseaseInfoByDiseaseId(it.diseaseId);
-    _loadAdviceByRiskLevelId(it.riskLevelId);
+    // ถ้ายังไม่มีคำแนะนำที่บันทึกไว้ ค่อยไปดึง template จาก treatments ตาม risk_level_id
+    if (it.adviceText.trim().isEmpty) {
+      _loadAdviceByRiskLevelId(it.riskLevelId);
+    }
   }
 
   void _backToList() {
@@ -403,9 +517,11 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
       if (treeId <= 0) throw Exception('ไม่พบ tree_id');
 
       final token = await _readToken();
-      final url = Uri.parse(_joinApi(API_BASE, '/diagnosis_history/read_diagnosis_history.php'))
+      final url = Uri.parse(_joinApi(_apiBaseUrl, '/diagnosis_history/read_diagnosis_history.php'))
           .replace(queryParameters: {
         'tree_id': treeId.toString(),
+        // ✅ เผื่อ backend ใช้ชื่อคีย์นี้
+        'orange_tree_id': treeId.toString(),
         'limit': '100',
       });
 
@@ -460,7 +576,7 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
 
     try {
       final token = await _readToken();
-      final url = Uri.parse(_joinApi(API_BASE, '/diseases/read_diseases.php'));
+      final url = Uri.parse(_joinApi(_apiBaseUrl, '/diseases/read_diseases.php'));
 
       final res = await http.get(url, headers: _headers(token)).timeout(const Duration(seconds: 12));
 
@@ -540,7 +656,7 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
     try {
       final token = await _readToken();
 
-      final url = Uri.parse(_joinApi(API_BASE, '/treatments/read_treatments.php'))
+      final url = Uri.parse(_joinApi(_apiBaseUrl, '/treatments/read_treatments.php'))
           .replace(queryParameters: {'risk_level_id': riskLevelId.toString()});
 
       final res = await http.get(url, headers: _headers(token)).timeout(const Duration(seconds: 12));
@@ -578,7 +694,6 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
   // ✅ การ์ดรายการประวัติการสแกน (เหมือนภาพ)
   Widget _historyCard(DiagnosisHistoryItem it) {
     final date = it.diagnosedAt != null ? _fmtDate(it.diagnosedAt!) : '-';
-    final sev = it.severityLabel.isNotEmpty ? it.severityLabel : '-';
 
     return InkWell(
       onTap: () => _openDetail(it),
@@ -615,16 +730,31 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
                 children: [
                   Text(
                     it.diseaseLabel,
-                    style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
+                    // ✅ ใช้ TextTheme ของระบบ เพื่อให้ฟอน/สไตล์เหมือนส่วนอื่นของแอป
+                    style: (Theme.of(context).textTheme.titleMedium ?? const TextStyle())
+                        .copyWith(fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(height: 4),
+                  // ✅ แสดงวันที่วินิจฉัยใต้ชื่อโรค
                   Text(
-                    '$date  •  ระดับ: $sev  •  คะแนน: ${it.totalScore}',
-                    style: const TextStyle(color: Colors.black54, fontSize: 13),
+                    'วันที่วินิจฉัย: $date',
+                    style: (Theme.of(context).textTheme.bodySmall ?? const TextStyle(fontSize: 13))
+                        .copyWith(color: Colors.black54),
                   ),
                 ],
               ),
             ),
+
+            // ✅ สถานะด้านขวา (ตามภาพ)
+            if (it.statusLabel.isNotEmpty) ...[
+              const SizedBox(width: 12),
+              Text(
+                it.statusLabel,
+                textAlign: TextAlign.right,
+                style: (Theme.of(context).textTheme.bodyMedium ?? const TextStyle())
+                    .copyWith(fontWeight: FontWeight.w700, color: it.statusColor),
+              ),
+            ],
           ],
         ),
       ),
@@ -669,16 +799,18 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
             IconButton(onPressed: _loadAll, icon: const Icon(Icons.refresh)),
           ],
         ),
-        body: _loading
+        body: _bootstrapping
             ? const Center(child: CircularProgressIndicator())
-            : _error.isNotEmpty
-                ? Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Text(_error, textAlign: TextAlign.center),
-                    ),
-                  )
-                : (_view == _TreeHistoryView.list ? _buildListView() : _buildDetailView()),
+            : _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _error.isNotEmpty
+                    ? Center(
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Text(_error, textAlign: TextAlign.center),
+                        ),
+                      )
+                    : (_view == _TreeHistoryView.list ? _buildListView() : _buildDetailView()),
       ),
     );
   }
@@ -772,6 +904,14 @@ class _TreeHistoryPageState extends State<TreeHistoryPage> {
               Text('วันที่วินิจฉัย: $showDate'),
               const SizedBox(height: 4),
               Text('ระดับความรุนแรง: $showSeverity'),
+
+              if (selected.statusLabel.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Text(
+                  'สถานะการรักษา: ${selected.statusLabel}',
+                  style: TextStyle(fontWeight: FontWeight.w700, color: selected.statusColor),
+                ),
+              ],
 
               if (_loadingDiseaseInfo) ...[
                 const SizedBox(height: 10),
