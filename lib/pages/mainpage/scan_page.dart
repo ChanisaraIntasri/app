@@ -16,7 +16,7 @@ const kPrimaryGreen = Color(0xFF005E33);
 // ====== ตั้งค่า API โมเดล ======
 const String kModelApiBase = String.fromEnvironment(
   'MODEL_API_BASE',
-  defaultValue: 'https://updating-chamber-relax-rpm.trycloudflare.com',
+  defaultValue: 'https://faqs-trend-basename-convicted.trycloudflare.com',
 );
 const String kModelPredictPath = '/predict';
 const bool kUseRealModelApi = true;
@@ -60,6 +60,9 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
   bool _isBusy = false;
   bool _flashOn = false;
 
+  // ✅ เก็บข้อความ error หากเปิดกล้องไม่สำเร็จ (ยังเลือกจากแกลลอรี่/ถ่ายแบบ fallback ได้)
+  String? _cameraInitError;
+
   double _zoom = 1.0;
   double _minZoom = 1.0;
   double _maxZoom = 8.0;
@@ -101,8 +104,12 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
         await prefs.setString('current_tree_name', tn);
         await prefs.setString('last_tree_name', tn);
       }
-    } catch (_) {
-      // ignore
+    } catch (e) {
+      _cameraInitError = 'เปิดกล้องไม่สำเร็จ: ${e.toString()}';
+      // แจ้งหลังเฟรมแรก (กัน context ยังไม่พร้อม)
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _cameraInitError != null) _toast(_cameraInitError!);
+      });
     }
   }
 
@@ -249,13 +256,21 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
 
     final controller = CameraController(
       desc,
-      ResolutionPreset.high,
+      ResolutionPreset.medium,
       enableAudio: false,
       imageFormatGroup: ImageFormatGroup.jpeg,
     );
 
     _ctrl = controller;
-    await controller.initialize();
+    try {
+      await controller.initialize();
+    } catch (e) {
+      _cameraInitError = 'เปิดกล้องไม่สำเร็จ: ${e.toString()}';
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _cameraInitError != null) _toast(_cameraInitError!);
+      });
+      return;
+    }
 
     try {
       _minZoom = await controller.getMinZoomLevel();
@@ -328,11 +343,31 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
     }
   }
 
+
+Future<File?> _pickFromCameraFallback() async {
+  try {
+    // ใช้ image_picker เป็น fallback เผื่อ CameraController initialize ไม่สำเร็จ
+    // + ลดขนาดไฟล์ด้วย imageQuality/maxWidth เพื่อกันปัญหาไฟล์ใหญ่เกินฝั่ง API
+    final x = await _picker.pickImage(
+      source: ImageSource.camera,
+      preferredCameraDevice: CameraDevice.rear,
+      imageQuality: 88,
+      maxWidth: 1600,
+      maxHeight: 1600,
+    );
+    if (x == null) return null;
+    return File(x.path);
+  } catch (_) {
+    return null;
+  }
+}
   // =========================
   // ✅ FIX: กล้องไม่ยืด/ไม่เพี้ยนสัดส่วน
   // =========================
   Widget _buildCameraPreview(Size size) {
-    final controller = _ctrl!;
+    final controller = _ctrl;
+    if (controller == null) return const SizedBox.shrink();
+
     final value = controller.value;
     if (!value.isInitialized) return const SizedBox.shrink();
 
@@ -359,33 +394,49 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
     );
   }
 
-  Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
-    if (!kUseRealModelApi) {
-      return {
-        "ok": true,
-        "disease_name": "ใบจุดดำ",
-        "confidence": 0.91,
-        "disease_id": 1,
-      };
-    }
 
-    final uri = Uri.parse("$kModelApiBase$kModelPredictPath");
-
-    try {
-      final req = http.MultipartRequest('POST', uri);
-      req.files.add(await http.MultipartFile.fromPath('file', imgFile.path));
-
-      final res = await req.send();
-      final body = await res.stream.bytesToString();
-      final decoded = json.decode(body);
-
-      if (decoded is Map<String, dynamic>) return decoded;
-      if (decoded is Map) return Map<String, dynamic>.from(decoded);
-      return null;
-    } catch (_) {
-      return null;
-    }
+Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
+  if (!kUseRealModelApi) {
+    return {
+      "ok": true,
+      "disease_name": "ใบจุดดำ",
+      "confidence": 0.91,
+      "disease_id": 1,
+    };
   }
+
+  final uri = Uri.parse("$kModelApiBase$kModelPredictPath");
+
+  try {
+    final req = http.MultipartRequest('POST', uri);
+    req.files.add(await http.MultipartFile.fromPath('file', imgFile.path));
+
+    final res = await req.send();
+    final body = await res.stream.bytesToString();
+
+    // ✅ ถ้า HTTP ไม่สำเร็จ ให้คืน error เป็น Map เพื่อให้ caller แสดงข้อความได้
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      String msg = 'Model API error (${res.statusCode})';
+      try {
+        final decodedErr = json.decode(body);
+        if (decodedErr is Map && decodedErr['detail'] != null) {
+          msg = decodedErr['detail'].toString();
+        }
+      } catch (_) {
+        // ignore
+      }
+      return {"ok": false, "status_code": res.statusCode, "error": msg};
+    }
+
+    final decoded = json.decode(body);
+
+    if (decoded is Map<String, dynamic>) return decoded;
+    if (decoded is Map) return Map<String, dynamic>.from(decoded);
+    return null;
+  } catch (e) {
+    return {"ok": false, "error": e.toString()};
+  }
+}
 
   void _toast(String msg) {
     if (!mounted) return;
@@ -440,8 +491,23 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
     setState(() => _isBusy = true);
 
     try {
-      final file = await _takePictureToFile();
-      if (file == null) return;
+      File? file = await _takePictureToFile();
+      if (file == null) {
+        // ✅ fallback: บางเครื่อง/บางเคส CameraController อาจยังไม่พร้อมหรือ permission ไม่ผ่าน
+        file = await _pickFromCameraFallback();
+      }
+      if (file == null) {
+        _toast('ไม่สามารถถ่ายภาพได้ (กรุณาอนุญาตสิทธิ์กล้อง หรือเลือกจากแกลลอรี่)');
+        return;
+      }
+
+      final File imageFile = file!;
+
+      // ✅ กันกรณีไฟล์หาย/อ่านไม่ได้
+      if (!await imageFile.exists()) {
+        _toast('ไม่พบไฟล์รูปภาพที่ถ่าย (ลองถ่ายใหม่อีกครั้ง)');
+        return;
+      }
 
       // ✅ ยืนยันรูป
       final ok = await showDialog<bool>(
@@ -454,7 +520,7 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
               aspectRatio: 3 / 4,
               child: Stack(
                 children: [
-                  Positioned.fill(child: Image.file(file, fit: BoxFit.cover)),
+                  Positioned.fill(child: Image.file(imageFile, fit: BoxFit.cover)),
                   Positioned(
                     top: 10,
                     left: 10,
@@ -506,7 +572,16 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
       if (ok != true) return;
 
       // ✅ ส่งโมเดล -> ไปหน้าวินิจฉัย
-      final result = await _callModelApi(file);
+      final result = await _callModelApi(imageFile);
+
+      if (result != null && result['ok'] == false) {
+        final msg =
+            (result['error'] ?? result['detail'] ?? 'เรียก Model API ไม่สำเร็จ')
+                .toString();
+        _toast(msg);
+        return;
+      }
+
 
       String diseaseName = 'ไม่ทราบโรค';
       String? diseaseId;
@@ -536,7 +611,7 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
 
       // ✅ ส่งชื่อโรคไปเป็น diseaseNameTh (ไม่ทำให้ constructor พัง)
       await _goToDiagnosisPage(
-        imageFile: file,
+        imageFile: imageFile,
         diseaseId: diseaseId,
         diseaseNameTh: diseaseName,
         compareImageUrl: compareImageUrl,
@@ -625,13 +700,6 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    if (_ctrl == null) {
-      return const Scaffold(
-        backgroundColor: Colors.black,
-        body: Center(child: CircularProgressIndicator()),
-      );
-    }
-
     final size = MediaQuery.of(context).size;
     final mq = MediaQuery.of(context);
 
@@ -667,6 +735,17 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
         child: Stack(
           children: [
             Positioned.fill(child: _buildCameraPreview(size)),
+
+
+// ✅ หากกล้องยังไม่พร้อม ให้แสดงตัวโหลด (ยังสามารถกดแกลลอรี่/ปุ่มถ่ายแบบ fallback ได้)
+if (_ctrl == null || _ctrl?.value.isInitialized != true)
+  Positioned.fill(
+    child: IgnorePointer(
+      child: Center(
+        child: CircularProgressIndicator(color: Colors.white),
+      ),
+    ),
+  ),
 
             // mask รอบนอกใบไม้
             Positioned.fill(

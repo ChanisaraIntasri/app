@@ -93,7 +93,7 @@ class _ReminderRow {
 
 class _HomePageState extends State<HomePage> {
   // ------------ state ------------
-  late List<CitrusTreeRecord> _trees;
+  List<_TreeLite> _trees = [];
 
   // ✅ map tree_id -> ลำดับต้นที่ (ต้นที่ 1,2,3...) เพื่อแสดงแบบที่ผู้ใช้เข้าใจ
   Map<String, int> _treeNoById = {};
@@ -139,34 +139,32 @@ class _HomePageState extends State<HomePage> {
 
   // ---------- tree display helper ----------
   // แสดง "ชื่อต้น" ถ้ามี, ไม่งั้นแสดง "ต้นที่ N" (ไม่แสดง id ตรง ๆ)
+  // แสดง "ชื่อต้น" จากตาราง orange_trees (ถ้ามี) เพื่อให้ไม่สลับ/ไม่รีนัมเบอร์หลังลบ-เพิ่มต้น
   String _treeLabelById(String treeId) {
     final tid = treeId.toString().trim();
 
-    // 1) ถ้ามี list ต้นและมีชื่อ → ใช้ชื่อ
+    // 1) ถ้ามี list ต้นและพบ id → ใช้ tree_name เป็นหลัก
     if (_trees.isNotEmpty) {
       final idx = _trees.indexWhere((t) => t.id.toString() == tid);
       if (idx >= 0) {
-        final n = _s(_trees[idx].name);
-        if (n.isNotEmpty) {
-          // ถ้าชื่อดูเหมือน "ต้น 70" หรือเป็นตัวเลขล้วน ๆ → ไม่เอา (ถือว่าเป็น id)
-          final norm = n.replaceAll(RegExp(r'\s+'), ' ').trim();
-          final looksLikeId =
-              RegExp(r'^(ต้น\s*)?\d+$').hasMatch(norm) || norm == 'ต้น $tid';
-          if (!looksLikeId) return n;
-        }
+        final rawName = _s(_trees[idx].name);
+        final normalized = _normalizeTreeName(rawName, fallbackId: tid);
+        if (normalized.isNotEmpty) return normalized;
 
-        // ไม่มีชื่อ/ชื่อเป็น id → ใช้ลำดับใน list
-        return 'ต้นที่ ${idx + 1}';
+        // ถ้าไม่มีชื่อจริง ๆ → ใช้เลข id เป็น "ต้นที่ N" (กันกรณีชื่อว่าง)
+        if (RegExp(r'^\d+$').hasMatch(tid)) return 'ต้นที่ $tid';
+        return 'ไม่ทราบชื่อต้น';
       }
     }
 
-    // 2) ถ้าไม่พบใน list → ใช้ mapping จาก reminders เพื่อเป็น "ต้นที่ N"
+    // 2) ถ้า Home ยังไม่โหลดรายชื่อต้น → ใช้เลข tree_id ตรง ๆ เพื่อไม่ให้สลับลำดับ
+    if (RegExp(r'^\d+$').hasMatch(tid)) return 'ต้นที่ $tid';
+
+    // 3) fallback (กันพัง)
     _ensureTreeNoIndex();
     final no = _treeNoById[tid];
     if (no != null) return 'ต้นที่ $no';
-
-    // 3) fallback สุดท้าย (กันพัง)
-    return tid.isNotEmpty ? 'ต้นที่ ?' : 'ไม่ทราบชื่อต้น';
+    return 'ไม่ทราบชื่อต้น';
   }
 
   // reminders ของช่วงเดือนที่กำลังโฟกัส
@@ -226,7 +224,12 @@ Map<String, String> _headers(String? token) => {
   @override
   void initState() {
     super.initState();
-    _trees = List<CitrusTreeRecord>.from(widget.trees);
+    _trees = widget.trees.map((t) => _TreeLite(id: t.id.toString(), name: _s(t.name))).toList();
+
+    // ✅ ดึงรายชื่อต้นล่าสุดจาก API เพื่อให้ชื่อ/ลำดับตรงกับหน้า Share (กันกรณีหน้า Home ไม่ได้รับ trees มา)
+    Future.microtask(() async {
+      await _loadTreesFromApi();
+    });
 
     _reloadFromPrefs();
     _loadRemindersForMonth(_focusedDay);
@@ -237,7 +240,9 @@ Map<String, String> _headers(String? token) => {
   void didUpdateWidget(covariant HomePage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (widget.trees != oldWidget.trees) {
-      _trees = List<CitrusTreeRecord>.from(widget.trees);
+      _trees = widget.trees.map((t) => _TreeLite(id: t.id.toString(), name: _s(t.name))).toList();
+      _ensureTreeNoIndex();
+      _pruneRemindersNotInTrees();
       _rebuildDueIndexFromReminders();
     }
   }
@@ -267,6 +272,7 @@ Map<String, String> _headers(String? token) => {
     try {
       final prefs = await SharedPreferences.getInstance();
       await _refreshApiBaseFromPrefs();
+      await _loadTreesFromApi(silent: true);
       final raw = prefs.getString('tree_last_diagnosis_v1') ?? '{}';
       final decoded = jsonDecode(raw);
       if (!mounted) return;
@@ -291,6 +297,95 @@ Map<String, String> _headers(String? token) => {
     }
   }
 
+  // ---------- trees load (for correct labels) ----------
+  int? _extractTrailingNumber(String name) {
+    final norm = name.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final m = RegExp(r'(\d+)\s*$').firstMatch(norm);
+    if (m == null) return null;
+    return int.tryParse(m.group(1) ?? '');
+  }
+
+  String _normalizeTreeName(String raw, {String? fallbackId}) {
+    final norm = raw.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (norm.isEmpty) {
+      if (fallbackId != null && RegExp(r'^\d+$').hasMatch(fallbackId)) {
+        return 'ต้นที่ $fallbackId';
+      }
+      return '';
+    }
+
+    // รองรับชื่อแบบ: "ต้น 4", "ต้นที่ 4", "4"
+    final m = RegExp(r'^(?:ต้น|ต้นที่)\s*(\d+)$').firstMatch(norm);
+    if (m != null) return 'ต้นที่ ${m.group(1)}';
+    if (RegExp(r'^\d+$').hasMatch(norm)) return 'ต้นที่ $norm';
+
+    return norm;
+  }
+
+  Future<void> _loadTreesFromApi({bool silent = false}) async {
+    try {
+      await _refreshApiBaseFromPrefs();
+      final token = await _readToken();
+      if (token == null || token.isEmpty) return;
+
+      final uri = Uri.parse(_joinApi(_apiBaseUrl, '/orange_trees/read_orange_trees.php'));
+      final res = await http.get(uri, headers: _headers(token)).timeout(const Duration(seconds: 12));
+      if (res.statusCode != 200) return;
+
+      final decoded = jsonDecode(res.body);
+      List data = [];
+      if (decoded is Map && decoded['data'] is List) {
+        data = decoded['data'] as List;
+      } else if (decoded is List) {
+        data = decoded;
+      }
+
+      final items = <_TreeLite>[];
+      for (final it in data) {
+        if (it is! Map) continue;
+        final m = Map<String, dynamic>.from(it);
+        final id = _s(m['tree_id'] ?? m['id']);
+        if (id.isEmpty) continue;
+        final name = _s(m['tree_name'] ?? m['name']);
+        items.add(_TreeLite(id: id, name: name));
+      }
+
+      // เรียงเพื่อให้ลำดับ "ต้นที่ N" ตรงกับชื่อ (ถ้ามีเลขท้ายชื่อ)
+      items.sort((a, b) {
+        final an = _extractTrailingNumber(a.name);
+        final bn = _extractTrailingNumber(b.name);
+        if (an != null && bn != null && an != bn) return an.compareTo(bn);
+
+        final ai = int.tryParse(a.id);
+        final bi = int.tryParse(b.id);
+        if (ai != null && bi != null && ai != bi) return ai.compareTo(bi);
+
+        return a.id.compareTo(b.id);
+      });
+
+      if (!mounted) return;
+      setState(() {
+        _trees = items;
+      });
+
+      _ensureTreeNoIndex();
+      _pruneRemindersNotInTrees();
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  void _pruneRemindersNotInTrees() {
+    if (_trees.isEmpty || _reminders.isEmpty) return;
+    final ids = _trees.map((t) => t.id).toSet();
+    final before = _reminders.length;
+    _reminders.removeWhere((r) => !ids.contains(r.treeId));
+    if (_reminders.length != before) {
+      _rebuildDueIndexFromReminders();
+    }
+  }
+
+
   // ---------- reminders load/build ----------
   Future<void> _loadRemindersForMonth(DateTime focus) async {
     if (_loadingReminders) return;
@@ -298,6 +393,7 @@ Map<String, String> _headers(String? token) => {
 
     try {
       await _refreshApiBaseFromPrefs();
+      await _loadTreesFromApi(silent: true);
       final token = await _readToken();
       if (token == null || token.isEmpty) {
         _loadingReminders = false;
@@ -377,6 +473,12 @@ Map<String, String> _headers(String? token) => {
             treatmentId: tId,
           ),
         );
+      }
+
+      // ✅ ถ้าต้นถูกลบไปแล้ว แต่ reminder ค้างอยู่ใน DB → ไม่เอามาแสดงในปฏิทิน
+      if (_trees.isNotEmpty) {
+        final ids = _trees.map((t) => t.id).toSet();
+        rows.removeWhere((r) => !ids.contains(r.treeId));
       }
 
       if (!mounted) return;

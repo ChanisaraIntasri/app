@@ -69,6 +69,19 @@ class _SharePageState extends State<SharePage> {
         if (token != null && token.isNotEmpty) 'Authorization': 'Bearer $token',
       };
 
+  // ✅ แจ้งหน้า Home ให้รีเฟรชปฏิทิน/ข้อมูลต้น (ใช้กับลบ/เพิ่ม/แก้ไขต้น)
+  Future<void> _bumpHomeRefresh() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      // หน้า Home มี watcher ฟังคีย์นี้อยู่แล้ว
+      await prefs.setInt('home_calendar_refresh_ts', ts);
+      await prefs.setInt('app_refresh_ts_v1', ts);
+    } catch (_) {
+      // ignore
+    }
+  }
+
   // ---------- Helpers ----------
   void _snack(String msg) {
     if (!mounted) return;
@@ -304,6 +317,9 @@ class _SharePageState extends State<SharePage> {
         if (newId.isEmpty) {
           await _loadTrees(silent: true);
         }
+
+        // ✅ เพิ่มต้นแล้วให้หน้า Home รีเฟรชปฏิทินทันที
+        await _bumpHomeRefresh();
       } else {
         _snack('เพิ่มต้นส้มไม่สำเร็จ');
       }
@@ -342,6 +358,9 @@ class _SharePageState extends State<SharePage> {
       final decoded = _tryDecode(res.body);
       if (decoded is Map<String, dynamic> && decoded['ok'] == true) {
         await _loadTrees(silent: true);
+
+        // ✅ แก้ไขต้นแล้วให้หน้า Home รีเฟรชปฏิทินทันที
+        await _bumpHomeRefresh();
       } else {
         _snack('อัปเดตไม่สำเร็จ');
       }
@@ -383,6 +402,10 @@ class _SharePageState extends State<SharePage> {
       if (!ok) {
         throw Exception('DELETE_FAILED');
       }
+
+      // ✅ ลบสำเร็จ → รีเฟรชปฏิทินหน้า Home และปรับเลขต้นถัดไป
+      await _bumpHomeRefresh();
+      _nextTreeNumber = _guessNextTreeNumber(_records);
     } catch (e) {
       // ❌ ถ้าลบไม่สำเร็จ → ใส่กลับ
       if (removed != null && mounted) {

@@ -292,9 +292,13 @@ class _TreatmentAdvicePageState extends State<TreatmentAdvicePage> {
     try {
       final token = await _readToken();
       final userId = await _readUserId();
+      final treeIdInt = _toInt(widget.treeId);
 
       final payload = <String, dynamic>{
-        'tree_id': widget.treeId,
+        'tree_id': treeIdInt,
+        'treeId': treeIdInt,
+        'orange_tree_id': treeIdInt,
+        'orangeTreeId': treeIdInt,
         'disease_id': widget.diseaseId,
         'risk_level_id': widget.riskLevelId,
         'advice_text': adviceText,
@@ -327,6 +331,32 @@ class _TreatmentAdvicePageState extends State<TreatmentAdvicePage> {
     } catch (_) {}
     return null;
   }
+
+  /// ✅ คืนค่า diagnosis_history_id ให้แน่นอน (ถ้ายังไม่มีจะสร้างใหม่)
+  Future<int?> _createDiagnosisHistoryIfNeeded() async {
+    final exist = _diagnosisHistoryId ?? widget.diagnosisHistoryId;
+    if (exist != null && exist > 0) {
+      _diagnosisHistoryId = exist;
+      return exist;
+    }
+
+    // ใช้ข้อความคำแนะนำที่มีอยู่เป็น payload เพื่อให้ backend รับได้
+    final base = (_resolvedAdviceText ?? '').trim();
+    final more = (_nextChemicalLine ?? '').trim();
+    final template =
+        widget.adviceList.where((e) => e.trim().isNotEmpty).join('\n\n').trim();
+
+    final combined = [base, more].where((e) => e.isNotEmpty).join('\n').trim();
+    final textToSend = combined.isNotEmpty ? combined : template;
+
+    final newId = await _createDiagnosisHistory(textToSend);
+    if (newId != null && newId > 0) {
+      _diagnosisHistoryId = newId;
+      return newId;
+    }
+    return null;
+  }
+
 
   /// ✅ อ่านพารามิเตอร์แผนการพ่นจาก risk_level_moa_plan (sprays_per_product + interval days)
 
@@ -433,7 +463,10 @@ class _TreatmentAdvicePageState extends State<TreatmentAdvicePage> {
     final sprays = (_spraysPerProduct != null && _spraysPerProduct! > 0) ? _spraysPerProduct! : 1;
     final interval = (_sprayIntervalDays != null && _sprayIntervalDays! > 0) ? _sprayIntervalDays! : 7;
 
-    final dhId = _diagnosisHistoryId ?? widget.diagnosisHistoryId;
+    int? dhId = _diagnosisHistoryId ?? widget.diagnosisHistoryId;
+    if (dhId == null || dhId <= 0) {
+      dhId = await _createDiagnosisHistoryIfNeeded();
+    }
 
     final chemName = (_recommendedChemicalName ?? '').trim();
     final baseNote = chemName.isNotEmpty ? 'พ่นยา: $chemName' : 'พ่นยา';
@@ -465,9 +498,13 @@ class _TreatmentAdvicePageState extends State<TreatmentAdvicePage> {
   }) async {
     try {
       final userId = await _readUserId();
+      final treeIdInt = _toInt(widget.treeId);
 
       final payload = <String, dynamic>{
-        'tree_id': widget.treeId,
+        'tree_id': treeIdInt,
+        'treeId': treeIdInt,
+        'orange_tree_id': treeIdInt,
+        'orangeTreeId': treeIdInt,
         // ส่งหลายชื่อกัน mismatch
         'reminder_date': _ymd(reminderDate),
         'date': _ymd(reminderDate),
@@ -476,17 +513,28 @@ class _TreatmentAdvicePageState extends State<TreatmentAdvicePage> {
         'is_done': 0,
         if (userId != null) 'user_id': userId,
         if (diagnosisHistoryId != null) 'diagnosis_history_id': diagnosisHistoryId,
+        if (diagnosisHistoryId != null) 'diagnosisHistoryId': diagnosisHistoryId,
+        if (diagnosisHistoryId != null) 'history_id': diagnosisHistoryId,
+        if (diagnosisHistoryId != null) 'id': diagnosisHistoryId,
         if (treatmentId != null) 'treatment_id': treatmentId,
         if (chemicalId != null) 'chemical_id': chemicalId,
         if (chemicalName != null) 'chemical_name': chemicalName,
       };
 
+      final headers = <String, String>{
+        'Accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+        if (token != null) 'Authorization': 'Bearer $token',
+      };
+
+      final body = payload.map((k, v) => MapEntry(k, v.toString()));
+
       await http.post(
         _uri('care_reminders/create_care_reminders.php'),
-        headers: _headersJson(token),
-        body: jsonEncode(payload),
+        headers: headers,
+        body: body,
       );
-    } catch (_) {}
+} catch (_) {}
   }
 
   // ---------------- UI Components ----------------
