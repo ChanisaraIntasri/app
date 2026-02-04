@@ -28,11 +28,98 @@ class _SignInScreenState extends State<SignInScreen> {
   bool _obscure = true;
   bool _loading = false;
 
+  // ✅ สำหรับแจ้งเตือนแบบวงขอบแดง + ข้อความใต้ช่อง (ตามภาพตัวอย่าง)
+  String? _emailServerError;
+  String? _passwordServerError;
+  String? _formErrorText;
+
   @override
   void dispose() {
     _emailCtl.dispose();
     _passCtl.dispose();
     super.dispose();
+  }
+
+  String _pickFirstString(dynamic v) {
+    if (v == null) return '';
+    if (v is String) return v;
+    return v.toString();
+  }
+
+  String _extractMessage(Map<String, dynamic> data) {
+    final keys = ['message', 'msg', 'error_description', 'detail', 'error'];
+    for (final k in keys) {
+      final s = _pickFirstString(data[k]).trim();
+      if (s.isNotEmpty) return s;
+    }
+    // บาง API ส่ง errors เป็น map/list
+    final errs = data['errors'];
+    if (errs is List) {
+      for (final e in errs) {
+        final s = _pickFirstString(e).trim();
+        if (s.isNotEmpty) return s;
+      }
+    }
+    if (errs is Map) {
+      for (final v in errs.values) {
+        final s = _pickFirstString(v).trim();
+        if (s.isNotEmpty) return s;
+      }
+    }
+    return '';
+  }
+
+  String _friendlyLoginError(
+    http.Response res,
+    Map<String, dynamic> data,
+  ) {
+    // ✅ กรณี HTTP เป็น Unauthorized
+    if (res.statusCode == 401 || res.statusCode == 403) {
+      return 'อีเมลหรือรหัสผ่านไม่ถูกต้อง';
+    }
+
+    // ✅ อ่าน code/message จากเซิร์ฟเวอร์
+    final rawCode = _pickFirstString(
+      data['error_code'] ?? data['code'] ?? data['error'] ?? '',
+    ).trim();
+    final code = rawCode.toUpperCase();
+
+    final serverMsg = _extractMessage(data);
+    final lowMsg = serverMsg.toLowerCase();
+
+    // โค้ดยอดฮิตจาก backend หลายแบบ
+    if (code.contains('INVALID') ||
+        code.contains('UNAUTHORIZED') ||
+        code.contains('CREDENTIAL') ||
+        code.contains('PASSWORD') ||
+        code.contains('LOGIN_FAILED')) {
+      return 'อีเมลหรือรหัสผ่านไม่ถูกต้อง';
+    }
+    if (code.contains('NOT_FOUND') ||
+        code.contains('USER_NOT_FOUND') ||
+        code.contains('EMAIL_NOT_FOUND')) {
+      return 'ไม่พบบัญชีผู้ใช้นี้';
+    }
+
+    // จับจากข้อความ (เช่น backend ส่งเป็นภาษาอังกฤษ)
+    if ((lowMsg.contains('password') &&
+            (lowMsg.contains('wrong') ||
+                lowMsg.contains('invalid') ||
+                lowMsg.contains('incorrect'))) ||
+        (lowMsg.contains('credential') && lowMsg.contains('invalid'))) {
+      return 'อีเมลหรือรหัสผ่านไม่ถูกต้อง';
+    }
+    if (lowMsg.contains('email') &&
+        lowMsg.contains('not') &&
+        lowMsg.contains('found')) {
+      return 'ไม่พบบัญชีผู้ใช้นี้';
+    }
+
+    // ถ้ามีข้อความจาก server ที่อ่านรู้เรื่อง ให้แสดง
+    if (serverMsg.isNotEmpty && serverMsg.length <= 140) {
+      return serverMsg;
+    }
+    return 'เข้าสู่ระบบไม่สำเร็จ กรุณาตรวจสอบอีเมลหรือรหัสผ่าน';
   }
 
   InputDecoration _dec(String hint) => InputDecoration(
@@ -44,6 +131,15 @@ class _SignInScreenState extends State<SignInScreen> {
           borderRadius: BorderRadius.circular(22),
           borderSide: const BorderSide(color: kBrandGreen, width: 2),
         ),
+        // ✅ ขอบแดงตอน error (เหมือนภาพตัวอย่าง)
+        errorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(22),
+          borderSide: const BorderSide(color: Colors.red, width: 2),
+        ),
+        focusedErrorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(22),
+          borderSide: const BorderSide(color: Colors.red, width: 2),
+        ),
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
       );
@@ -52,8 +148,27 @@ class _SignInScreenState extends State<SignInScreen> {
     return RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(email);
   }
 
+  void _clearServerErrors() {
+    if (_emailServerError == null &&
+        _passwordServerError == null &&
+        _formErrorText == null) return;
+    setState(() {
+      _emailServerError = null;
+      _passwordServerError = null;
+      _formErrorText = null;
+    });
+  }
+
   Future<void> _login() async {
     FocusScope.of(context).unfocus();
+
+    // ✅ เคลียร์ error เก่าก่อน validate
+    setState(() {
+      _emailServerError = null;
+      _passwordServerError = null;
+      _formErrorText = null;
+    });
+
     if (!(_formKey.currentState?.validate() ?? false)) return;
 
     setState(() => _loading = true);
@@ -70,11 +185,18 @@ class _SignInScreenState extends State<SignInScreen> {
           )
           .timeout(const Duration(seconds: 20));
 
-      final Map<String, dynamic> data =
-          res.body.isEmpty ? {} : (jsonDecode(res.body) as Map<String, dynamic>);
+      Map<String, dynamic> data = {};
+      try {
+        if (res.body.isNotEmpty) {
+          final decoded = jsonDecode(res.body);
+          if (decoded is Map<String, dynamic>) data = decoded;
+        }
+      } catch (_) {
+        // ถ้า body ไม่ใช่ JSON ให้ถือว่า data ว่าง แล้วใช้ statusCode เป็นหลัก
+      }
 
-      final success =
-          (data['ok'] == true) || (data['status']?.toString() == 'success');
+      final success = (res.statusCode >= 200 && res.statusCode < 300) &&
+          ((data['ok'] == true) || (data['status']?.toString() == 'success'));
 
       if (success) {
         final dynamic userRaw = data['user'] ?? data['data'];
@@ -86,7 +208,8 @@ class _SignInScreenState extends State<SignInScreen> {
         if (userRaw is Map<String, dynamic>) {
           token = (userRaw['token'] ?? '').toString();
 
-          username = (userRaw['usernืame'] ??
+          username = (userRaw['username'] ??
+                  userRaw['usernืame'] ??
                   userRaw['name'] ??
                   userRaw['email'] ??
                   '')
@@ -108,20 +231,18 @@ class _SignInScreenState extends State<SignInScreen> {
           token = (data['token'] ?? data['session_id'] ?? '').toString();
         }
 
-        final prefs = await SharedPreferences.getInstance();
-
-        if (token.isNotEmpty) {
-          await prefs.setString(kPrefTokenKey, token);
-          await prefs.setString(kPrefTokenLegacyKey, token);
-        } else {
+        // ✅ ถ้าไม่มี token ให้แสดง error แบบฟอร์ม (ไม่ใช้ SnackBar)
+        if (token.isEmpty) {
           if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('เข้าสู่ระบบสำเร็จ แต่ไม่พบข้อมูล token'),
-              duration: Duration(seconds: 3),
-            ),
-          );
+          setState(() {
+            _formErrorText = 'เข้าสู่ระบบสำเร็จ แต่ไม่พบข้อมูล token';
+          });
+          return;
         }
+
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(kPrefTokenKey, token);
+        await prefs.setString(kPrefTokenLegacyKey, token);
 
         if (userId != null) {
           await prefs.setInt('user_id', userId);
@@ -130,10 +251,6 @@ class _SignInScreenState extends State<SignInScreen> {
 
         if (!mounted) return;
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('เข้าสู่ระบบสำเร็จ')),
-        );
-
         Navigator.of(context).pushAndRemoveUntil(
           MaterialPageRoute(
             builder: (_) => MainNav(initialUsername: username),
@@ -141,22 +258,29 @@ class _SignInScreenState extends State<SignInScreen> {
           (route) => false,
         );
       } else {
-        final serverMsg = (data['error']?.toString().trim().isNotEmpty ?? false)
-            ? data['error'].toString()
-            : null;
-
-        final msg =
-            serverMsg ?? 'เข้าสู่ระบบไม่สำเร็จ กรุณาตรวจสอบอีเมลหรือรหัสผ่าน';
+        final msg = _friendlyLoginError(res, data);
 
         if (!mounted) return;
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(msg)));
+
+        setState(() {
+          // ✅ ผูก error ให้ไปขึ้นใต้ช่องที่เกี่ยวข้อง
+          if (msg == 'ไม่พบบัญชีผู้ใช้นี้') {
+            _emailServerError = msg;
+          } else if (msg == 'อีเมลหรือรหัสผ่านไม่ถูกต้อง') {
+            _passwordServerError = msg;
+          } else {
+            _formErrorText = msg;
+          }
+        });
+
+        // กระตุ้นให้แสดงข้อความใต้ช่องทันที
+        _formKey.currentState?.validate();
       }
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('เครือข่ายมีปัญหา กรุณาลองใหม่อีกครั้ง')),
-      );
+      setState(() {
+        _formErrorText = 'เครือข่ายมีปัญหา กรุณาลองใหม่อีกครั้ง';
+      });
     } finally {
       if (mounted) setState(() => _loading = false);
     }
@@ -193,11 +317,12 @@ class _SignInScreenState extends State<SignInScreen> {
                     ),
                     child: Form(
                       key: _formKey,
+                      autovalidateMode: AutovalidateMode.onUserInteraction,
                       child: Column(
-                        mainAxisAlignment: MainAxisAlignment.start, // ✅ ขยับขึ้น
+                        mainAxisAlignment: MainAxisAlignment.start,
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          SizedBox(height: topGap), // ✅ เว้นระยะด้านบนแบบสมดุล
+                          SizedBox(height: topGap),
 
                           const Text(
                             'เข้าสู่ระบบ',
@@ -226,13 +351,22 @@ class _SignInScreenState extends State<SignInScreen> {
                             keyboardType: TextInputType.emailAddress,
                             textInputAction: TextInputAction.next,
                             decoration: _dec('อีเมล'),
+                            onChanged: (_) {
+                              // ✅ ถ้าผู้ใช้แก้ไข ให้ล้าง error ของช่องนั้น
+                              if (_emailServerError != null ||
+                                  _formErrorText != null) {
+                                setState(() {
+                                  _emailServerError = null;
+                                  _formErrorText = null;
+                                });
+                              }
+                            },
                             validator: (v) {
                               final t = v?.trim() ?? '';
                               if (t.isEmpty) return 'กรุณากรอกอีเมล';
-                              if (!_isValidEmail(t)) {
-                                return 'รูปแบบอีเมลไม่ถูกต้อง';
-                              }
-                              return null;
+                              if (!_isValidEmail(t)) return 'รูปแบบอีเมลไม่ถูกต้อง';
+                              // ✅ error จาก server
+                              return _emailServerError;
                             },
                           ),
                           const SizedBox(height: 12),
@@ -253,7 +387,18 @@ class _SignInScreenState extends State<SignInScreen> {
                                     setState(() => _obscure = !_obscure),
                               ),
                             ),
-                            onFieldSubmitted: (_) => _login(),
+                            onChanged: (_) {
+                              if (_passwordServerError != null ||
+                                  _formErrorText != null) {
+                                setState(() {
+                                  _passwordServerError = null;
+                                  _formErrorText = null;
+                                });
+                              }
+                            },
+                            onFieldSubmitted: (_) {
+                              if (!_loading) _login();
+                            },
                             validator: (v) {
                               if (v == null || v.isEmpty) {
                                 return 'กรุณากรอกรหัสผ่าน';
@@ -261,7 +406,8 @@ class _SignInScreenState extends State<SignInScreen> {
                               if (v.length < 6) {
                                 return 'รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร';
                               }
-                              return null;
+                              // ✅ error จาก server
+                              return _passwordServerError;
                             },
                           ),
 
@@ -297,6 +443,22 @@ class _SignInScreenState extends State<SignInScreen> {
                                     ),
                             ),
                           ),
+
+                          // ✅ แจ้งเตือนแบบข้อความสีแดง (กรณีไม่ผูกกับช่องใดช่องหนึ่ง)
+                          if (_formErrorText != null &&
+                              (_formErrorText ?? '').trim().isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: Text(
+                                _formErrorText!,
+                                textAlign: TextAlign.left,
+                                style: const TextStyle(
+                                  color: Colors.red,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
 
                           const SizedBox(height: 16),
 

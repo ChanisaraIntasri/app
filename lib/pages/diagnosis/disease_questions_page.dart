@@ -36,6 +36,22 @@ int _toInt(dynamic v, [int fallback = 0]) {
   return int.tryParse(s) ?? fallback;
 }
 
+
+bool? _toBoolNullable(dynamic v) {
+  if (v == null) return null;
+  if (v is bool) return v;
+  if (v is num) return v != 0;
+  final s = v.toString().trim().toLowerCase();
+  if (s.isEmpty) return null;
+  if (s == '1' || s == 'true' || s == 'yes' || s == 'y' || s == 'on' || s == 'multi' || s == 'multiple') {
+    return true;
+  }
+  if (s == '0' || s == 'false' || s == 'no' || s == 'n' || s == 'off' || s == 'single' || s == 'one') {
+    return false;
+  }
+  return null;
+}
+
 String _normKey(String s) => s.trim().toLowerCase();
 
 String _severityToCode(String s) {
@@ -111,10 +127,16 @@ class _Choice {
   }
 }
 
+
 class _DiseaseQuestion {
   final String diseaseQuestionId; // pivot id
   final String questionId;
   final String questionText;
+
+  /// normalized type:
+  /// - 'multi'   = เลือกได้หลายข้อ (checkbox multi-select)
+  /// - 'single'  = เลือกได้ข้อเดียว
+  /// - 'numeric' = กรอก/เลือกค่าตัวเลข (ถ้ามี choices ก็จะแสดงแบบเลือก)
   final String type;
 
   _DiseaseQuestion({
@@ -124,16 +146,88 @@ class _DiseaseQuestion {
     required this.type,
   });
 
+  static String _normalizeType(Map<String, dynamic> m) {
+    final raw = _s(m['question_type'] ??
+        m['type'] ??
+        m['answer_type'] ??
+        m['input_type'] ??
+        m['select_type'] ??
+        m['selection_type']);
+
+    final t = _normKey(raw);
+
+    // 1) numeric type
+    if (t.contains('numeric') || t.contains('number') || t == 'num') return 'numeric';
+
+    // 2) multi/single from DB flags (ถ้ามี)
+    final multiRaw = m['allow_multiple'] ??
+        m['allow_multi'] ??
+        m['is_multiple'] ??
+        m['is_multi'] ??
+        m['multiple'] ??
+        m['multi'] ??
+        m['multi_select'] ??
+        m['is_multi_select'] ??
+        m['isMultiSelect'] ??
+        m['select_multiple'] ??
+        m['selectMultiple'] ??
+        m['can_select_multiple'] ??
+        m['canSelectMultiple'] ??
+        m['can_multi_select'] ??
+        m['canMultiSelect'];
+
+    final maxSelectRaw = m['max_select'] ??
+        m['maxSelect'] ??
+        m['max_selected'] ??
+        m['maxSelected'] ??
+        m['max_selectable'] ??
+        m['maxSelectable'] ??
+        m['select_limit'] ??
+        m['selection_limit'] ??
+        m['max_answers'] ??
+        m['maxAnswers'] ??
+        m['max_choices'] ??
+        m['maxChoices'] ??
+        m['max_options'] ??
+        m['maxOptions'];
+
+    final allowMulti = _toBoolNullable(multiRaw);
+    final maxSelect = _toInt(maxSelectRaw, 0);
+
+    bool isMulti;
+    if (allowMulti != null) {
+      // ✅ DB ส่งมาชัดเจนว่าเลือกได้หลายข้อหรือไม่
+      isMulti = allowMulti;
+    } else if (maxSelect > 1) {
+      isMulti = true;
+    } else if (maxSelect == 1) {
+      isMulti = false;
+    } else {
+      // 3) fallback จากชนิดคำถาม (กรณี DB ไม่ส่ง flag)
+      if (t.contains('multi') || t.contains('multiple') || t.contains('checkbox')) {
+        isMulti = true;
+      } else if (t.contains('single') || t.contains('radio') || t.contains('one')) {
+        isMulti = false;
+      } else {
+        // default: เลือกได้ข้อเดียว
+        isMulti = false;
+      }
+    }
+
+    return isMulti ? 'multi' : 'single';
+  }
+
   factory _DiseaseQuestion.fromJson(Map<String, dynamic> m) {
     final dqid = _s(m['disease_question_id'] ?? m['dq_id'] ?? m['id']);
     final qid = _s(m['question_id'] ?? m['qid'] ?? m['questionId']);
     final qt = _s(m['question_text'] ?? m['text'] ?? m['question']);
-    final t = _s(m['question_type'] ?? m['type']);
+
+    final t = _normalizeType(m);
     return _DiseaseQuestion(
       diseaseQuestionId: dqid,
       questionId: qid,
       questionText: qt,
-      type: t.isEmpty ? 'yes_no' : t,
+      type: t.isEmpty ? 'single' : t,
     );
   }
 }
@@ -173,6 +267,31 @@ class _DiseaseQuestionsPageState extends State<DiseaseQuestionsPage> {
   /// - yes_no / numeric / single: store selected choice_id as String
   /// - multi: store Set<String> of choice_id
   Map<String, dynamic> answers = {};
+
+  // ✅ ตั้งค่าเป็น true เพื่อ "บังคับให้ทุกคำถามเลือกได้แค่ 1 ข้อ" (ยกเว้น numeric)
+  // ถ้าต้องการให้กลับไปอิงตาม DB (เลือกได้หลายข้อบางคำถาม) ให้เปลี่ยนเป็น false
+  static const bool kForceSingleChoice = true;
+
+  String _effectiveType(_DiseaseQuestion q) {
+    if (q.type == 'numeric') return 'numeric';
+    if (kForceSingleChoice) return 'single';
+    return q.type; // 'single' หรือ 'multi'
+  }
+
+  bool _isMulti(_DiseaseQuestion q) => _effectiveType(q) == 'multi';
+
+  bool _hasSingleAnswer(String dqid) {
+    final v = answers[dqid];
+    if (v is Set) return v.isNotEmpty;
+    return _s(v).isNotEmpty;
+  }
+
+  String _getSingleAnswerId(String dqid) {
+    final v = answers[dqid];
+    if (v is Set && v.isNotEmpty) return v.first.toString();
+    return _s(v);
+  }
+
 
   Future<String?> _readToken() async {
     final prefs = await SharedPreferences.getInstance();
@@ -332,11 +451,15 @@ class _DiseaseQuestionsPageState extends State<DiseaseQuestionsPage> {
   }
 
   bool _isAnswered(_DiseaseQuestion q) {
-    final v = answers[q.diseaseQuestionId];
-    if (q.type == 'multi') {
+    final dqid = q.diseaseQuestionId;
+    final v = answers[dqid];
+
+    if (_isMulti(q)) {
       return v is Set<String> && v.isNotEmpty;
     }
-    return v != null && _s(v).isNotEmpty;
+
+    // single/numeric
+    return _hasSingleAnswer(dqid);
   }
 
   bool _validate() {
@@ -376,7 +499,7 @@ class _DiseaseQuestionsPageState extends State<DiseaseQuestionsPage> {
       final choices = choicesByDiseaseQuestionId[q.diseaseQuestionId] ?? const [];
 
       if (choices.isNotEmpty) {
-        if (q.type == 'multi') {
+        if (_isMulti(q)) {
           if (v is Set<String>) {
             for (final id in v) {
               final c = choices.where((x) => x.id == id).toList();
@@ -384,8 +507,8 @@ class _DiseaseQuestionsPageState extends State<DiseaseQuestionsPage> {
             }
           }
         } else {
-          final id = v?.toString();
-          if (id != null && id.isNotEmpty) {
+          final id = _getSingleAnswerId(q.diseaseQuestionId);
+          if (id.isNotEmpty) {
             final c = choices.where((x) => x.id == id).toList();
             if (c.isNotEmpty) total += c.first.score;
           }
@@ -962,7 +1085,7 @@ Widget _selectedBubble() {
 Widget _questionCard(_DiseaseQuestion q, {required int index, required int total}) {
   final dqid = q.diseaseQuestionId;
   final choices = choicesByDiseaseQuestionId[dqid] ?? const [];
-  final type = q.type;
+  final type = _effectiveType(q);
 
   // ซ่อนปุ่มถัดไป/ยืนยัน เมื่อเป็น single-choice (เหมือนในภาพ) → แตะแล้วไปข้อถัดไปอัตโนมัติ
   final autoAdvance = choices.isNotEmpty && type != 'multi';
@@ -1023,7 +1146,7 @@ Future<void> _pickSingleChoiceAndMaybeNext(String dqid, String choiceId) async {
 
   Widget _questionInput(_DiseaseQuestion q, List<_Choice> choices, {required bool autoAdvance}) {
     final dqid = q.diseaseQuestionId;
-    final type = q.type;
+    final type = _effectiveType(q);
 
     // ✅ ไม่ hardcode choice (ดึงจากฐานข้อมูลเท่านั้น)
     if (choices.isEmpty) {
@@ -1086,40 +1209,25 @@ Future<void> _pickSingleChoiceAndMaybeNext(String dqid, String choiceId) async {
               },
               child: Container(
                 width: double.infinity,
-                height: 54,
-                padding: const EdgeInsets.symmetric(horizontal: 16),
+                constraints: const BoxConstraints(minHeight: 54),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(14),
                   border: Border.all(color: kPrimaryGreen, width: 2),
-                  color: checked ? kPrimaryGreen.withOpacity(0.06) : Colors.transparent,
+                  color: checked ? kPrimaryGreen.withOpacity(0.10) : Colors.transparent,
                 ),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 22,
-                      height: 22,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(4),
-                        border: Border.all(color: kPrimaryGreen, width: 2),
-                        color: checked ? kPrimaryGreen : Colors.transparent,
-                      ),
-                      child: checked
-                          ? const Icon(Icons.check, size: 16, color: Colors.white)
-                          : null,
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    c.label,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.black87,
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        c.label,
-                        style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w800,
-                          color: kPrimaryGreen,
-                        ),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
+
               ),
             ),
           );
@@ -1129,7 +1237,7 @@ Future<void> _pickSingleChoiceAndMaybeNext(String dqid, String choiceId) async {
 
     
     // ✅ single choice (หน้าตาเหมือน multi ตามภาพ แต่เลือกได้ 1 ข้อ)
-    final selectedId = _s(answers[dqid]);
+    final selectedId = _getSingleAnswerId(dqid);
 
     return Column(
       children: choices.map((c) {
@@ -1145,43 +1253,25 @@ Future<void> _pickSingleChoiceAndMaybeNext(String dqid, String choiceId) async {
           },
           child: Container(
             margin: const EdgeInsets.only(bottom: 12),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+            constraints: const BoxConstraints(minHeight: 54),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(
-                color: isSelected ? kPrimaryGreen : kPrimaryGreen.withOpacity(0.65),
-                width: 1.6,
-              ),
+              border: Border.all(color: kPrimaryGreen, width: 2),
               color: isSelected ? kPrimaryGreen.withOpacity(0.10) : Colors.white,
             ),
-            child: Row(
-              children: [
-                Container(
-                  width: 22,
-                  height: 22,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(4),
-                    border: Border.all(
-                      color: isSelected ? kPrimaryGreen : kPrimaryGreen.withOpacity(0.8),
-                      width: 2,
-                    ),
-                    color: isSelected ? kPrimaryGreen : Colors.transparent,
-                  ),
-                  child: isSelected ? const Icon(Icons.check, size: 16, color: Colors.white) : null,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                c.label,
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.black87,
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    c.label,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w800,
-                      color: kPrimaryGreen,
-                    ),
-                  ),
-                ),
-              ],
+              ),
             ),
+
           ),
         );
       }).toList(),
@@ -1194,7 +1284,7 @@ Future<void> _pickSingleChoiceAndMaybeNext(String dqid, String choiceId) async {
     final q = questions[_currentIndex.clamp(0, questions.length - 1)];
 
     // ✅ แสดงปุ่ม "ต่อไป" เฉพาะคำถามที่ตอบได้หลายข้อ (multi) เท่านั้น
-    if (q.type != 'multi') {
+    if (_effectiveType(q) != 'multi') {
       return const SizedBox(height: 14);
     }
 

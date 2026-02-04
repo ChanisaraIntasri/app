@@ -10,13 +10,14 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:persistent_bottom_nav_bar/persistent_bottom_nav_bar.dart';
 
 import '../diagnosis/disease_diagnosis_page.dart';
+import 'confirm_capture_page.dart';
 
 const kPrimaryGreen = Color(0xFF005E33);
 
 // ====== ตั้งค่า API โมเดล ======
 const String kModelApiBase = String.fromEnvironment(
   'MODEL_API_BASE',
-  defaultValue: 'https://faqs-trend-basename-convicted.trycloudflare.com',
+  defaultValue: 'https://named-volvo-biggest-adapters.trycloudflare.com',
 );
 const String kModelPredictPath = '/predict';
 const bool kUseRealModelApi = true;
@@ -69,6 +70,12 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
   double _baseZoom = 1.0;
 
   final ImagePicker _picker = ImagePicker();
+
+  // =========================
+  // ✅ แจ้งเตือนแบบบล็อกด้านบน (แทน SnackBar ที่อยู่ล่างเกิน)
+  // =========================
+  String? _topNoticeMsg;
+  Timer? _topNoticeTimer;
 
   // =========================
   // ✅ Tree context (กันกรณีไม่ได้ส่ง treeId มาจากหน้าก่อนหน้า)
@@ -219,6 +226,7 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _topNoticeTimer?.cancel();
     _ctrl?.dispose();
     super.dispose();
   }
@@ -256,7 +264,7 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
 
     final controller = CameraController(
       desc,
-      ResolutionPreset.medium,
+      ResolutionPreset.veryHigh,
       enableAudio: false,
       imageFormatGroup: ImageFormatGroup.jpeg,
     );
@@ -440,9 +448,20 @@ Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
 
   void _toast(String msg) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg)),
-    );
+
+    // ซ่อน SnackBar เก่า (เผื่อมีหลงมา)
+    try {
+      ScaffoldMessenger.of(context).clearSnackBars();
+    } catch (_) {
+      // ignore
+    }
+
+    setState(() => _topNoticeMsg = msg);
+    _topNoticeTimer?.cancel();
+    _topNoticeTimer = Timer(const Duration(seconds: 3), () {
+      if (!mounted) return;
+      setState(() => _topNoticeMsg = null);
+    });
   }
 
   /// ✅ ปรับให้ตรงกับ constructor จริงของ DiseaseDiagnosisPage
@@ -452,6 +471,8 @@ Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
     String? diseaseNameTh,
     String? diseaseNameEn,
     String? compareImageUrl,
+    double? scanConfidence, // 0..1 หรือ 0..100
+    double? leafConfidence, // 0..1 หรือ 0..100
   }) async {
     var treeId = _t(_resolvedTreeId ?? widget.treeId);
     if (treeId.isEmpty) {
@@ -480,6 +501,8 @@ Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
         diseaseNameEn: diseaseNameEn,
         compareImageUrl: compareImageUrl,
         userImageFile: imageFile, // ✅ ส่งรูปผู้ใช้ตามที่หน้า diagnosis รองรับ
+        scanConfidence: scanConfidence,
+        leafConfidence: leafConfidence,
       ),
       withNavBar: false, // ✅ ซ่อนแถบล่างตอนอยู่หน้า Scan
       pageTransitionAnimation: PageTransitionAnimation.cupertino,
@@ -509,64 +532,12 @@ Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
         return;
       }
 
-      // ✅ ยืนยันรูป
-      final ok = await showDialog<bool>(
-        context: context,
-        barrierDismissible: false,
-        builder: (_) {
-          return Dialog(
-            insetPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 24),
-            child: AspectRatio(
-              aspectRatio: 3 / 4,
-              child: Stack(
-                children: [
-                  Positioned.fill(child: Image.file(imageFile, fit: BoxFit.cover)),
-                  Positioned(
-                    top: 10,
-                    left: 10,
-                    child: IconButton(
-                      icon: const Icon(Icons.close, color: Colors.white),
-                      onPressed: () => Navigator.pop(context, false),
-                    ),
-                  ),
-                  Positioned(
-                    bottom: 14,
-                    left: 14,
-                    right: 14,
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton(
-                            style: OutlinedButton.styleFrom(
-                              foregroundColor: Colors.white,
-                              side: const BorderSide(color: Colors.white),
-                              backgroundColor: Colors.black45,
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                            ),
-                            onPressed: () => Navigator.pop(context, false),
-                            child: const Text('ถ่ายใหม่'),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: ElevatedButton(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: kPrimaryGreen,
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(vertical: 12),
-                            ),
-                            onPressed: () => Navigator.pop(context, true),
-                            child: const Text('ยืนยัน'),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
+      // ✅ ยืนยันรูป (แสดงเฉพาะส่วนในกรอบใบไม้)
+      final ok = await Navigator.of(context).push<bool>(
+        MaterialPageRoute(
+          builder: (_) => ConfirmCapturePage(imagePath: imageFile.path),
+          fullscreenDialog: true,
+        ),
       );
 
       if (ok != true) return;
@@ -575,9 +546,13 @@ Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
       final result = await _callModelApi(imageFile);
 
       if (result != null && result['ok'] == false) {
-        final msg =
-            (result['error'] ?? result['detail'] ?? 'เรียก Model API ไม่สำเร็จ')
-                .toString();
+        // ✅ กรณี API ตอบกลับ ok:false (เช่น ไม่พบใบส้ม / ความมั่นใจต่ำ)
+        final msg = (result['detail'] ??
+                result['error'] ??
+                result['disease_name'] ??
+                result['message'] ??
+                'ไม่สามารถวิเคราะห์ภาพได้ กรุณาถ่ายใหม่ให้ชัดและให้ใบอยู่ในกรอบ')
+            .toString();
         _toast(msg);
         return;
       }
@@ -586,6 +561,8 @@ Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
       String diseaseName = 'ไม่ทราบโรค';
       String? diseaseId;
       String? compareImageUrl;
+      double? scanConfidence; // 0..1 หรือ 0..100
+      double? leafConfidence; // 0..1 หรือ 0..100
 
       if (result != null) {
         final dn = result['disease_name'] ?? result['label'] ?? result['name'];
@@ -596,6 +573,22 @@ Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
 
         final cmp = result['compare_image_url'] ?? result['compareImageUrl'];
         if (cmp != null) compareImageUrl = cmp.toString();
+
+        // ✅ percent ความมั่นใจจากโมเดล (บางทีอาจส่งมาเป็น 0..1 หรือ 0..100)
+        final c = result['confidence'];
+        if (c is num) {
+          scanConfidence = c.toDouble();
+        } else if (c != null) {
+          scanConfidence = double.tryParse(c.toString());
+        }
+
+        // ✅ percent ความมั่นใจว่าเป็น “ใบส้ม” (ถ้า backend ส่งมา)
+        final lc = result['leaf_confidence'];
+        if (lc is num) {
+          leafConfidence = lc.toDouble();
+        } else if (lc != null) {
+          leafConfidence = double.tryParse(lc.toString());
+        }
       }
 
       // ✅ ถ้าโมเดลไม่ส่ง disease_id มา ใช้ map ชื่อโรค -> id
@@ -615,6 +608,8 @@ Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
         diseaseId: diseaseId,
         diseaseNameTh: diseaseName,
         compareImageUrl: compareImageUrl,
+        scanConfidence: scanConfidence,
+        leafConfidence: leafConfidence,
       );
     } finally {
       if (mounted) setState(() => _isBusy = false);
@@ -634,6 +629,8 @@ Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
       String diseaseName = 'ไม่ทราบโรค';
       String? diseaseId;
       String? compareImageUrl;
+      double? scanConfidence; // 0..1 หรือ 0..100
+      double? leafConfidence; // 0..1 หรือ 0..100
 
       if (result != null) {
         final dn = result['disease_name'] ?? result['label'] ?? result['name'];
@@ -644,6 +641,22 @@ Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
 
         final cmp = result['compare_image_url'] ?? result['compareImageUrl'];
         if (cmp != null) compareImageUrl = cmp.toString();
+
+        // ✅ percent ความมั่นใจจากโมเดล (บางทีอาจส่งมาเป็น 0..1 หรือ 0..100)
+        final c = result['confidence'];
+        if (c is num) {
+          scanConfidence = c.toDouble();
+        } else if (c != null) {
+          scanConfidence = double.tryParse(c.toString());
+        }
+
+        // ✅ percent ความมั่นใจว่าเป็น “ใบส้ม” (ถ้า backend ส่งมา)
+        final lc = result['leaf_confidence'];
+        if (lc is num) {
+          leafConfidence = lc.toDouble();
+        } else if (lc != null) {
+          leafConfidence = double.tryParse(lc.toString());
+        }
       }
 
       if (diseaseId == null || diseaseId.trim().isEmpty) {
@@ -661,6 +674,8 @@ Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
         diseaseId: diseaseId,
         diseaseNameTh: diseaseName,
         compareImageUrl: compareImageUrl,
+        scanConfidence: scanConfidence,
+        leafConfidence: leafConfidence,
       );
     } finally {
       if (mounted) setState(() => _isBusy = false);
@@ -806,6 +821,54 @@ if (_ctrl == null || _ctrl?.value.isInitialized != true)
                 ],
               ),
             ),
+
+            // ✅ แจ้งเตือนแบบบล็อกด้านบน-กลางหน้าจอ (พื้นหลังสีขาว)
+            if (_topNoticeMsg != null)
+              Positioned(
+                top: 70,
+                left: 0,
+                right: 0,
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 520),
+                    child: Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(14),
+                        onTap: () => setState(() => _topNoticeMsg = null),
+                        child: Container(
+                          margin: const EdgeInsets.symmetric(horizontal: 16),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 12,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(14),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.25),
+                                blurRadius: 14,
+                                offset: const Offset(0, 8),
+                              ),
+                            ],
+                          ),
+                          child: Text(
+                            _topNoticeMsg!,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: Colors.black87,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                              height: 1.3,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
 
             if (_cams.length > 1)
               Positioned(

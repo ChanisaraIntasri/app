@@ -35,6 +35,13 @@ class DiseaseDiagnosisPage extends StatefulWidget {
   final String? compareImageUrl;
   final File? userImageFile;
 
+  // ✅ percent ความมั่นใจจากการสแกน (มาจาก Model API)
+  // ค่าที่รับได้ทั้ง 0..1 หรือ 0..100
+  final double? scanConfidence;
+
+  // ✅ percent ความมั่นใจว่าเป็น “ใบส้ม” (ถ้า backend ส่งมา)
+  final double? leafConfidence;
+
   const DiseaseDiagnosisPage({
     super.key,
     required this.treeId,
@@ -44,6 +51,8 @@ class DiseaseDiagnosisPage extends StatefulWidget {
     this.diseaseNameEn,
     this.compareImageUrl,
     this.userImageFile,
+    this.scanConfidence,
+    this.leafConfidence,
   });
 
   @override
@@ -234,6 +243,78 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
     );
   }
 
+  double _normalizePercent(double v) {
+    if (v.isNaN || v.isInfinite) return 0.0;
+    var pct = (v <= 1.0) ? (v * 100.0) : v;
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    return pct.toDouble();
+  }
+  Widget _confidenceCard() {
+    // ✅ แสดงเฉพาะความมั่นใจในการวินิจฉัยโรค (ไม่แสดงความมั่นใจว่าเป็นใบส้ม)
+    final hasScan = widget.scanConfidence != null;
+    if (!hasScan) return const SizedBox.shrink();
+
+    final scanPct = _normalizePercent(widget.scanConfidence!);
+
+    Widget row(String label, double pct) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    label,
+                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+                  ),
+                ),
+                Text(
+                  '${pct.toStringAsFixed(0)}%',
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w900, color: kPrimaryGreen),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: LinearProgressIndicator(
+                value: (pct / 100.0).clamp(0.0, 1.0),
+                minHeight: 10,
+                backgroundColor: Colors.black12,
+                valueColor: const AlwaysStoppedAnimation<Color>(kPrimaryGreen),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      margin: const EdgeInsets.only(top: 10, bottom: 8),
+      decoration: BoxDecoration(
+        color: kPrimaryGreen.withOpacity(0.06),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: kPrimaryGreen.withOpacity(0.20)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'ผลการสแกน',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: kPrimaryGreen),
+          ),
+          const SizedBox(height: 10),
+          row('ความมั่นใจในการวินิจฉัยโรค', scanPct),
+        ],
+      ),
+    );
+  }
+
   Widget _sectionCard({
     required String title,
     required String value,
@@ -405,6 +486,10 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
                 'ชื่อโรค : $dn',
                 style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
               ),
+
+              // ✅ แสดงเปอร์เซ็นต์ความมั่นใจจากการสแกน (ถ้ามี)
+              _confidenceCard(),
+
               const SizedBox(height: 16),
 
               _sectionCard(

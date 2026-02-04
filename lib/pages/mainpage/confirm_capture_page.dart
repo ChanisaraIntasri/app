@@ -125,7 +125,7 @@ class ConfirmCapturePage extends StatelessWidget {
                           elevation: 2,
                         ),
                         child: const Text(
-                          'ยืนยันรูปนี้',
+                          'ยืนยัน',
                           style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w800,
