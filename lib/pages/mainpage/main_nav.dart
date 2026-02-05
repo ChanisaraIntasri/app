@@ -6,7 +6,7 @@ import 'package:persistent_bottom_nav_bar/persistent_bottom_nav_bar.dart';
 import 'home.dart';
 import 'scan_page.dart';
 import 'share.dart';
-import 'setting.dart';
+import 'setting.dart'; // import ไว้เหมือนเดิมเผื่อใช้ในอนาคต หรือลบออกก็ได้ถ้าไม่ได้ใช้ในไฟล์นี้แล้ว
 
 // สีหลักต่าง ๆ ของ nav bar
 const kNavBg = Colors.white;            // พื้นแถบเมนู (pill สีขาว)
@@ -19,8 +19,8 @@ class MainNav extends StatefulWidget {
     required this.initialUsername,
 
     /// ✅ index แบบเดิมของระบบ (ภายนอก)
-    /// 0 = Home, 1 = Share, 2 = Settings
-    /// (ไม่มีกล้องใน index นี้)
+    /// 0 = Home, 1 = Share
+    /// (Settings ถูกย้ายออกไปแล้ว)
     this.initialIndex = 0,
   });
 
@@ -40,23 +40,20 @@ class _MainNavState extends State<MainNav> {
   int _lastRealTabInternal = 0;
 
   // =========================
-  // ✅ map index แบบ "ภายนอก" (เดิมของระบบ)
-  // 0=Home, 1=Share, 2=Settings
-  //
-  // ✅ map index แบบ "ภายใน" (ใหม่)
-  // 0=Home, 1=Camera(action), 2=Share, 3=Settings
+  // ✅ ปรับปรุงการ map index ใหม่ (ตัด Settings ออก)
+  // ภายนอก: 0=Home, 1=Share
+  // ภายใน:  0=Home, 1=Camera(action), 2=Share
   // =========================
   int _externalToInternal(int ext) {
     if (ext <= 0) return 0; // home
     if (ext == 1) return 2; // share
-    if (ext == 2) return 3; // settings
+    // ถ้าเคยเป็น 2 (Settings) ให้กลับไป Home เพราะไม่มีแท็บ Settings แล้ว
     return 0;
   }
 
   int _internalToExternal(int internal) {
     if (internal == 0) return 0; // home
     if (internal == 2) return 1; // share
-    if (internal == 3) return 2; // settings
     return 0;
   }
 
@@ -64,7 +61,8 @@ class _MainNavState extends State<MainNav> {
   void initState() {
     super.initState();
 
-    final safeExt = (widget.initialIndex < 0 || widget.initialIndex > 2)
+    // ปรับ range ให้เหลือแค่ 0-1 (Home, Share)
+    final safeExt = (widget.initialIndex < 0 || widget.initialIndex > 1)
         ? 0
         : widget.initialIndex;
     final initialInternal = _externalToInternal(safeExt);
@@ -73,7 +71,7 @@ class _MainNavState extends State<MainNav> {
     _username = widget.initialUsername;
     _lastRealTabInternal = initialInternal;
 
-    // ✅ เฝ้าดู flag ที่ถูก set จากหน้าอื่น ๆ เพื่อสลับแท็บกลับ Home/Share/Settings
+    // ✅ เฝ้าดู flag ที่ถูก set จากหน้าอื่น ๆ เพื่อสลับแท็บกลับ Home/Share
     _navWatchTimer = Timer.periodic(const Duration(milliseconds: 250), (_) {
       _checkPendingNav();
     });
@@ -86,18 +84,19 @@ class _MainNavState extends State<MainNav> {
     try {
       final prefs = await SharedPreferences.getInstance();
       final forceHome = prefs.getBool('force_home_tab') ?? false;
-      final pendingExt = prefs.getInt('pending_nav_index'); // ภายนอก: 0..2
+      final pendingExt = prefs.getInt('pending_nav_index'); // ภายนอก
 
       if (!forceHome && pendingExt == null) return;
 
       final targetExt = forceHome ? 0 : pendingExt!;
-      if (targetExt < 0 || targetExt > 2) {
+      // เช็ค range ใหม่ (เหลือแค่ 0 กับ 1)
+      if (targetExt < 0 || targetExt > 1) {
         await prefs.remove('pending_nav_index');
         await prefs.setBool('force_home_tab', false);
         return;
       }
 
-      final targetInternal = _externalToInternal(targetExt); // ภายใน: 0,2,3
+      final targetInternal = _externalToInternal(targetExt); // ภายใน: 0,2
 
       if (_controller.index != targetInternal) {
         setState(() {
@@ -126,18 +125,19 @@ class _MainNavState extends State<MainNav> {
   }
 
   // =========================
-  // ✅ หน้าตามแท็บ (มี placeholder ให้แท็บกล้อง)
-  // 0=Home, 1=Camera(placeholder), 2=Share, 3=Settings
+  // ✅ หน้าตามแท็บ (เอา SettingPage ออก และส่ง username ไป Home)
+  // 0=Home, 1=Camera(placeholder), 2=Share
   // =========================
   List<Widget> _screens() => [
-        const HomePage(),
-        const SizedBox.shrink(), // placeholder (จะไม่ถูกแสดงจริง เพราะเราจะ push ไปหน้า Scan)
+        // ส่ง username ไปให้ HomePage ใช้เปิดหน้า Setting
+        HomePage(username: _username),
+        const SizedBox.shrink(), // placeholder
         const SharePage(),
-        SettingPage(initialUsername: _username),
+        // SettingPage ถูกเอาออกแล้ว
       ];
 
   // =========================
-  // ✅ ไอคอนตามแท็บ (กล้องอยู่หลัง Home)
+  // ✅ ไอคอนตามแท็บ (เอาไอคอน Settings ออก)
   // =========================
   List<PersistentBottomNavBarItem> _items() => [
         PersistentBottomNavBarItem(
@@ -155,11 +155,7 @@ class _MainNavState extends State<MainNav> {
           activeColorPrimary: kNavIconActive,
           inactiveColorPrimary: kNavIconInactive,
         ),
-        PersistentBottomNavBarItem(
-          icon: const Icon(Icons.settings_rounded),
-          activeColorPrimary: kNavIconActive,
-          inactiveColorPrimary: kNavIconInactive,
-        ),
+        // ไอคอน Settings ถูกเอาออกแล้ว
       ];
 
   void _openScanPage() {
@@ -190,7 +186,7 @@ class _MainNavState extends State<MainNav> {
       navBarStyle: NavBarStyle.style6,
 
       onItemSelected: (index) async {
-        // ✅ index ภายใน: 0=Home, 1=Camera(action), 2=Share, 3=Settings
+        // ✅ index ภายใน: 0=Home, 1=Camera(action), 2=Share
         if (index == 1) {
           // กล้อง: ไม่เปลี่ยนแท็บจริง ให้เด้งกลับแท็บเดิม แล้ว push หน้า Scan
           final prev = _lastRealTabInternal;
@@ -212,7 +208,7 @@ class _MainNavState extends State<MainNav> {
         _lastRealTabInternal = index;
         setState(() {});
 
-        // ✅ เซฟ selectedIndex เป็น "แบบเดิมภายนอก" (0..2)
+        // ✅ เซฟ selectedIndex เป็น "แบบเดิมภายนอก"
         try {
           final prefs = await SharedPreferences.getInstance();
           await prefs.setInt('selectedIndex', _internalToExternal(index));
