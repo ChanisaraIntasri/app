@@ -433,21 +433,18 @@ class _SharePageState extends State<SharePage> {
       context: context,
       barrierColor: Colors.black54,
       builder: (ctx) {
-        final mq = MediaQuery.of(ctx);
-        // ✅ แก้ไข 1: ไม่ต้องคำนวณ bottom ตรงนี้
-        final maxH = mq.size.height - 48;
-
-        return Dialog(
+        final viewInsets = MediaQuery.of(ctx).viewInsets;
+        return AnimatedPadding(
+          padding: EdgeInsets.only(bottom: viewInsets.bottom),
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOut,
+          child: Dialog(
             backgroundColor: Colors.white,
-            // ✅ แก้ไข 2: ใช้ padding คงที่เพื่อให้ Dialog อยู่กลางจอ
-            insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+            insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 90),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
-            child: ConstrainedBox(
-              constraints: BoxConstraints(maxHeight: maxH < 220 ? 220.0 : maxH),
-              child: Padding(
+            child: Padding(
               padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
               child: SingleChildScrollView(
-                keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -479,8 +476,8 @@ class _SharePageState extends State<SharePage> {
                             child: ElevatedButton(
                               onPressed: () => Navigator.pop(ctx),
                               style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFFB71C1C),
-                                foregroundColor: Colors.white,
+                                backgroundColor: const Color(0xFFFFC9C9),
+                                foregroundColor: Colors.black,
                                 elevation: 0,
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
                               ),
@@ -512,8 +509,8 @@ class _SharePageState extends State<SharePage> {
                                 });
                               },
                               style: ElevatedButton.styleFrom(
-                                backgroundColor: kPrimaryGreen,
-                                foregroundColor: Colors.white,
+                                backgroundColor: const Color(0xFFBFE8C8),
+                                foregroundColor: Colors.black,
                                 elevation: 0,
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
                               ),
@@ -751,8 +748,6 @@ class _SharePageState extends State<SharePage> {
           TextField(
             controller: controller,
             maxLines: maxLines,
-            // ✅ แก้ไข 3: ลด scrollPadding ลงจาก 180 เหลือ 90
-            scrollPadding: const EdgeInsets.only(bottom: 90),
             decoration: InputDecoration(
               isDense: true,
               hintText: hintText,
@@ -775,21 +770,18 @@ class _SharePageState extends State<SharePage> {
       context: context,
       barrierColor: Colors.black54,
       builder: (ctx) {
-        final mq = MediaQuery.of(ctx);
-        // ✅ แก้ไข 4: ไม่ต้องคำนวณ bottom
-        final maxH = mq.size.height - 48;
-
-        return Dialog(
+        final viewInsets = MediaQuery.of(ctx).viewInsets;
+        return AnimatedPadding(
+          padding: EdgeInsets.only(bottom: viewInsets.bottom),
+          duration: const Duration(milliseconds: 160),
+          curve: Curves.easeOut,
+          child: Dialog(
             backgroundColor: Colors.white,
-            // ✅ แก้ไข 5: ใช้ padding คงที่
-            insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+            insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 90),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
-            child: ConstrainedBox(
-              constraints: BoxConstraints(maxHeight: maxH < 220 ? 220.0 : maxH),
-              child: Padding(
+            child: Padding(
               padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
               child: SingleChildScrollView(
-                keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [

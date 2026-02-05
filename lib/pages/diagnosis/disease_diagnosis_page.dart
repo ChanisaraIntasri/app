@@ -35,11 +35,7 @@ class DiseaseDiagnosisPage extends StatefulWidget {
   final String? compareImageUrl;
   final File? userImageFile;
 
-  // ✅ percent ความมั่นใจจากการสแกน (มาจาก Model API)
-  // ค่าที่รับได้ทั้ง 0..1 หรือ 0..100
   final double? scanConfidence;
-
-  // ✅ percent ความมั่นใจว่าเป็น “ใบส้ม” (ถ้า backend ส่งมา)
   final double? leafConfidence;
 
   const DiseaseDiagnosisPage({
@@ -72,7 +68,6 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
   bool _openCause = false;
   bool _openSymptoms = false;
 
-  // ✅ ป้องกันยิงซ้ำ (กัน reload/เปิดหน้าใหม่ซ้อน)
   bool _scanImageSaveAttempted = false;
 
   Future<String?> _readToken() async {
@@ -176,7 +171,6 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
     }
   }
 
-  // ✅ บันทึกรูปหลังสแกนเสร็จทันที (อัปโหลดไป diagnosis_history)
   Future<void> _saveScanImageToDiagnosisHistory() async {
     if (_scanImageSaveAttempted) return;
     _scanImageSaveAttempted = true;
@@ -185,7 +179,6 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
     if (file == null) return;
     if (!file.existsSync()) return;
 
-    // tree_id / disease_id ต้องเป็นตัวเลข (PHP validate ด้วย ctype_digit)
     if (widget.treeId.trim().isEmpty || widget.diseaseId.trim().isEmpty) return;
 
     try {
@@ -193,30 +186,14 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
       if (token == null || token.isEmpty) return;
 
       final uri = Uri.parse(_joinApi(API_BASE, '/diagnosis_history/create_diagnosis_history.php'));
-
       final req = http.MultipartRequest('POST', uri);
       req.headers.addAll(_headers(token));
-
       req.fields['tree_id'] = widget.treeId.toString();
       req.fields['disease_id'] = widget.diseaseId.toString();
-
-      // field ต้องชื่อ image_file ตาม create_diagnosis_history.php
       req.files.add(await http.MultipartFile.fromPath('image_file', file.path));
 
-      final streamed = await req.send().timeout(const Duration(seconds: 20));
-      final body = await streamed.stream.bytesToString();
-
-      // ไม่กระทบ UI: แค่พยายาม decode (กันกรณี backend เผลอส่งไม่ใช่ JSON)
-      try {
-        jsonDecode(body);
-      } catch (_) {
-        // ถ้าอยาก debug:
-        // print('saveScanImage invalid_json: $body');
-      }
-    } catch (e) {
-      // ถ้าอยาก debug:
-      // print('saveScanImage error: $e');
-    }
+      await req.send().timeout(const Duration(seconds: 20));
+    } catch (e) {}
   }
 
   @override
@@ -224,12 +201,10 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
     super.initState();
     name = widget.diseaseNameTh ?? widget.diseaseNameEn ?? '';
     _load();
-
-    // ✅ อัปโหลดรูปหลังสแกนทันที (ไม่รอ ไม่บล็อก UI)
     Future.microtask(_saveScanImageToDiagnosisHistory);
   }
 
-  // ✅ แก้ไข: เพิ่มความสูงเป็น 200 และตั้งค่า clipBehavior เพื่อให้รูปเต็มกรอบ
+  // ✅ แก้ความสูงและการตัดขอบรูป
   Widget _imageBox({required Widget child}) {
     return Container(
       height: 200,
@@ -238,7 +213,7 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: const Color(0xFFE6E6E6)),
       ),
-      clipBehavior: Clip.antiAlias, // ตัดขอบรูปภาพให้โค้งตาม Container
+      clipBehavior: Clip.antiAlias,
       child: Center(child: child),
     );
   }
@@ -246,75 +221,71 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
   double _normalizePercent(double v) {
     if (v.isNaN || v.isInfinite) return 0.0;
     var pct = (v <= 1.0) ? (v * 100.0) : v;
-    if (pct < 0) pct = 0;
-    if (pct > 100) pct = 100;
-    return pct.toDouble();
+    return pct.clamp(0, 100).toDouble();
   }
+
+  // ✅ ปรับสีและฟอนต์ส่วนผลการสแกนให้เหมือน Quick Result
   Widget _confidenceCard() {
-    // ✅ แสดงเฉพาะความมั่นใจในการวินิจฉัยโรค (ไม่แสดงความมั่นใจว่าเป็นใบส้ม)
     final hasScan = widget.scanConfidence != null;
     if (!hasScan) return const SizedBox.shrink();
 
     final scanPct = _normalizePercent(widget.scanConfidence!);
 
-    Widget row(String label, double pct) {
-      return Padding(
-        padding: const EdgeInsets.only(bottom: 10),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    label,
-                    style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
-                  ),
-                ),
-                Text(
-                  '${pct.toStringAsFixed(0)}%',
-                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w900, color: kPrimaryGreen),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: LinearProgressIndicator(
-                value: (pct / 100.0).clamp(0.0, 1.0),
-                minHeight: 10,
-                backgroundColor: Colors.black12,
-                valueColor: const AlwaysStoppedAnimation<Color>(kPrimaryGreen),
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      margin: const EdgeInsets.only(top: 10, bottom: 8),
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      margin: const EdgeInsets.only(top: 12, bottom: 14),
       decoration: BoxDecoration(
-        color: kPrimaryGreen.withOpacity(0.06),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: kPrimaryGreen.withOpacity(0.20)),
+        color: const Color(0xFFEAF3EE), // สีพื้นหลังเขียวอ่อน
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFB9D6C3)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const Text(
             'ผลการสแกน',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: kPrimaryGreen),
+            style: TextStyle(
+              color: kPrimaryGreen,
+              fontSize: 15,
+              fontWeight: FontWeight.w800,
+            ),
           ),
-          const SizedBox(height: 10),
-          row('ความมั่นใจในการวินิจฉัยโรค', scanPct),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'ความมั่นใจในการวินิจฉัยโรค',
+                  style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                ),
+              ),
+              Text(
+                '${scanPct.toStringAsFixed(0)}%',
+                style: const TextStyle(
+                  color: kPrimaryGreen,
+                  fontSize: 15,
+                  fontWeight: FontWeight.w900,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: LinearProgressIndicator(
+              value: (scanPct / 100.0).clamp(0.0, 1.0),
+              minHeight: 10,
+              backgroundColor: Colors.white,
+              valueColor: const AlwaysStoppedAnimation<Color>(kPrimaryGreen),
+            ),
+          ),
         ],
       ),
     );
   }
 
+  // ✅ ปรับ ExpansionTile ให้มีสไตล์เหมือน Quick Result
   Widget _sectionCard({
     required String title,
     required String value,
@@ -322,63 +293,54 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
     required VoidCallback onToggle,
     required IconData icon,
   }) {
-    final v = value.trim().isEmpty ? '-' : value.trim();
+    final v = value.trim().isEmpty ? 'ยังไม่มีข้อมูล$title' : value.trim();
 
     return Container(
-      margin: const EdgeInsets.only(bottom: 12),
+      margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE5E5E5)),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFE6E6E6)),
       ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: onToggle,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 34,
-                    height: 34,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: kPrimaryGreen.withOpacity(0.10),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Icon(icon, color: kPrimaryGreen, size: 18),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w900,
-                        color: kPrimaryGreen,
-                      ),
-                    ),
-                  ),
-                  Icon(open ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down, color: Colors.black54),
-                ],
-              ),
-              AnimatedCrossFade(
-                firstChild: const SizedBox.shrink(),
-                secondChild: Padding(
-                  padding: const EdgeInsets.only(top: 10),
-                  child: Text(
-                    v,
-                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600, height: 1.4),
-                  ),
-                ),
-                crossFadeState: open ? CrossFadeState.showSecond : CrossFadeState.showFirst,
-                duration: const Duration(milliseconds: 200),
-              ),
-            ],
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          tilePadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+          childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+          onExpansionChanged: (val) => onToggle(),
+          initiallyExpanded: open,
+          leading: Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: const Color(0xFFEAF3EE),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(icon, color: kPrimaryGreen, size: 20),
           ),
+          title: Text(
+            title,
+            style: const TextStyle(
+              color: kPrimaryGreen,
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          iconColor: Colors.black54,
+          collapsedIconColor: Colors.black54,
+          children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                v,
+                style: const TextStyle(
+                  fontSize: 14,
+                  height: 1.45,
+                  color: Colors.black87,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -412,129 +374,132 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
       backgroundColor: kPageBg,
       appBar: AppBar(
         backgroundColor: kPrimaryGreen,
-        foregroundColor: Colors.white,
-        title: const Text('วินิจฉัยโรค'),
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+        title: const Text(
+          'วินิจฉัยโรค',
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+        ),
+        centerTitle: true,
         actions: [
           IconButton(
             onPressed: loading ? null : _load,
-            icon: loading
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                    ),
-                  )
-                : const Icon(Icons.refresh),
+            icon: const Icon(Icons.refresh_rounded, color: Colors.white),
           )
         ],
       ),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: _imageBox(
-                      child: (widget.compareImageUrl == null || widget.compareImageUrl!.isEmpty)
-                          ? const Icon(Icons.image_outlined, size: 50, color: Colors.black38)
-                          : Image.network(
-                              widget.compareImageUrl!,
-                              fit: BoxFit.cover, // ✅ แก้ไข: ขยายรูปให้เต็มพื้นที่กรอบ
-                              width: double.infinity,
-                              height: double.infinity,
-                              errorBuilder: (_, __, ___) =>
-                                  const Icon(Icons.broken_image_outlined, size: 50, color: Colors.black38),
-                            ),
+        child: loading
+            ? const Center(child: CircularProgressIndicator())
+            : SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 18),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _imageBox(
+                            child: (widget.compareImageUrl == null || widget.compareImageUrl!.isEmpty)
+                                ? const Icon(Icons.image_outlined, size: 50, color: Colors.black26)
+                                : Image.network(
+                                    widget.compareImageUrl!,
+                                    fit: BoxFit.cover,
+                                    width: double.infinity,
+                                    height: double.infinity,
+                                    errorBuilder: (_, __, ___) =>
+                                        const Icon(Icons.broken_image_outlined, size: 50, color: Colors.black26),
+                                  ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _imageBox(
+                            child: (widget.userImageFile == null)
+                                ? const Icon(Icons.image_outlined, size: 50, color: Colors.black26)
+                                : Image.file(
+                                    widget.userImageFile!,
+                                    fit: BoxFit.cover,
+                                    width: double.infinity,
+                                    height: double.infinity,
+                                  ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: _imageBox(
-                      child: (widget.userImageFile == null)
-                          ? const Icon(Icons.image_outlined, size: 50, color: Colors.black38)
-                          : Image.file(
-                              widget.userImageFile!,
-                              fit: BoxFit.cover, // ✅ แก้ไข: ขยายรูปให้เต็มพื้นที่กรอบ
-                              width: double.infinity,
-                              height: double.infinity,
-                            ),
+                    const SizedBox(height: 16),
+
+                    if (error.isNotEmpty)
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        margin: const EdgeInsets.only(bottom: 14),
+                        decoration: BoxDecoration(
+                          color: Colors.red.withOpacity(0.06),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: Colors.red.withOpacity(0.25)),
+                        ),
+                        child: Text(error, style: const TextStyle(color: Colors.red, fontWeight: FontWeight.w700)),
+                      ),
+
+                    // ✅ ปรับขนาดฟอนต์ชื่อโรคเป็น 18 เหมือน Quick Result
+                    Text(
+                      'ชื่อโรค : $dn',
+                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 20),
 
-              if (error.isNotEmpty)
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(12),
-                  margin: const EdgeInsets.only(bottom: 14),
-                  decoration: BoxDecoration(
-                    color: Colors.red.withOpacity(0.06),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: Colors.red.withOpacity(0.25)),
-                  ),
-                  child: Text(error, style: const TextStyle(color: Colors.red, fontWeight: FontWeight.w700)),
-                ),
+                    _confidenceCard(),
 
-              Text(
-                'ชื่อโรค : $dn',
-                style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
-              ),
+                    _sectionCard(
+                      title: 'คำอธิบายโรค',
+                      value: description,
+                      open: _openDesc,
+                      onToggle: () => setState(() => _openDesc = !_openDesc),
+                      icon: Icons.description_rounded,
+                    ),
+                    _sectionCard(
+                      title: 'สาเหตุ',
+                      value: cause,
+                      open: _openCause,
+                      onToggle: () => setState(() => _openCause = !_openCause),
+                      icon: Icons.warning_amber_rounded,
+                    ),
+                    _sectionCard(
+                      title: 'อาการ',
+                      value: symptoms,
+                      open: _openSymptoms,
+                      onToggle: () => setState(() => _openSymptoms = !_openSymptoms),
+                      icon: Icons.healing_rounded,
+                    ),
 
-              // ✅ แสดงเปอร์เซ็นต์ความมั่นใจจากการสแกน (ถ้ามี)
-              _confidenceCard(),
+                    const SizedBox(height: 18),
 
-              const SizedBox(height: 16),
-
-              _sectionCard(
-                title: 'คำอธิบายโรค',
-                value: description,
-                open: _openDesc,
-                onToggle: () => setState(() => _openDesc = !_openDesc),
-                icon: Icons.description_outlined,
-              ),
-              _sectionCard(
-                title: 'สาเหตุ',
-                value: cause,
-                open: _openCause,
-                onToggle: () => setState(() => _openCause = !_openCause),
-                icon: Icons.warning_amber_rounded,
-              ),
-              _sectionCard(
-                title: 'อาการ',
-                value: symptoms,
-                open: _openSymptoms,
-                onToggle: () => setState(() => _openSymptoms = !_openSymptoms),
-                icon: Icons.healing_outlined,
-              ),
-
-              const SizedBox(height: 12),
-
-              SizedBox(
-                width: double.infinity,
-                height: 52,
-                child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: kPrimaryGreen,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-                    elevation: 0,
-                  ),
-                  onPressed: loading ? null : _goQuestions,
-                  child: const Text(
-                    'ตอบคำถาม',
-                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Colors.white),
-                  ),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 52,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: kPrimaryGreen,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                          elevation: 0,
+                        ),
+                        onPressed: loading ? null : _goQuestions,
+                        child: const Text(
+                          'ตอบคำถาม',
+                          style: TextStyle(
+                            fontSize: 16, 
+                            fontWeight: FontWeight.w800, 
+                            color: Colors.white
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            ],
-          ),
-        ),
       ),
     );
   }

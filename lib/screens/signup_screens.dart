@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'signin_screens.dart';
 
@@ -185,6 +186,12 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
       if (success) {
         if (!mounted) return;
+        // ✅ บันทึกว่าเป็นการสมัครใหม่ เพื่อให้ครั้งแรกที่เข้าสู่ระบบพาไปหน้า Share
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString("pending_first_login_email", _emailCtl.text.trim().toLowerCase());
+        } catch (_) {}
+
         // ✅ ไม่ใช้ SnackBar (ตามที่ขอ) -> เด้งกลับหน้าเข้าสู่ระบบเลย
         Navigator.of(context).pushAndRemoveUntil(
           MaterialPageRoute(builder: (_) => const SignInScreen()),

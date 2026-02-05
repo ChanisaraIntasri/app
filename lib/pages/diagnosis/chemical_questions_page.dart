@@ -309,9 +309,12 @@ class _ChemicalQuestionsPageState extends State<ChemicalQuestionsPage> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        "ครั้งนี้มีการพ่นสารเคมีหรือไม่?",
-                        style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                      const Center(
+                        child: Text(
+                          "ครั้งนี้มีการพ่นสารเคมีหรือไม่?",
+                          textAlign: TextAlign.center,
+                          style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+                        ),
                       ),
                       const SizedBox(height: 12),
                       Row(
@@ -338,9 +341,12 @@ class _ChemicalQuestionsPageState extends State<ChemicalQuestionsPage> {
                       const SizedBox(height: 22),
 
                       if (sprayed == "yes") ...[
-                        const Text(
-                          "สารเคมีที่ใช้ในการพ่นครั้งนี้คืออะไร?",
-                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                        const Center(
+                          child: Text(
+                            "สารเคมีที่ใช้ในการพ่นครั้งนี้คืออะไร?",
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+                          ),
                         ),
                         const SizedBox(height: 10),
 

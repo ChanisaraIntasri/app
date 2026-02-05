@@ -10,14 +10,15 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:persistent_bottom_nav_bar/persistent_bottom_nav_bar.dart';
 
 import '../diagnosis/disease_diagnosis_page.dart';
-import 'confirm_capture_page.dart';
+import '../diagnosis/analysis_loading_page.dart';
+import '../diagnosis/disease_quick_result_page.dart';
 
 const kPrimaryGreen = Color(0xFF005E33);
 
 // ====== ตั้งค่า API โมเดล ======
 const String kModelApiBase = String.fromEnvironment(
   'MODEL_API_BASE',
-  defaultValue: 'https://named-volvo-biggest-adapters.trycloudflare.com',
+  defaultValue: 'https://north-cambridge-partners-gifts.trycloudflare.com',
 );
 const String kModelPredictPath = '/predict';
 const bool kUseRealModelApi = true;
@@ -43,10 +44,14 @@ class ScanPage extends StatefulWidget {
   final String? treeId;
   final String? treeName;
 
+  // ✅ ถ้า true: สแกนแบบบอกผลโรคอย่างเดียว (ไม่เข้ากระบวนการตอบคำถาม)
+  final bool quickResultOnly;
+
   const ScanPage({
     super.key,
     this.treeId,
     this.treeName,
+    this.quickResultOnly = false,
   });
 
   @override
@@ -74,153 +79,27 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
   // =========================
   // ✅ แจ้งเตือนแบบบล็อกด้านบน (แทน SnackBar ที่อยู่ล่างเกิน)
   // =========================
-  String? _topNoticeMsg;
+  String? _topNotice;
   Timer? _topNoticeTimer;
 
-  // =========================
-  // ✅ Tree context (กันกรณีไม่ได้ส่ง treeId มาจากหน้าก่อนหน้า)
-  // =========================
+  // ✅ เก็บ tree context เผื่อหน้าอื่นเรียก ScanPage แบบไม่ได้ส่ง args มา
   String? _resolvedTreeId;
   String? _resolvedTreeName;
 
-  String _t(dynamic v) => (v ?? '').toString().trim();
-
-  String? _firstNonEmpty(List<String?> values) {
-    for (final v in values) {
-      if (v != null && v.trim().isNotEmpty) return v.trim();
-    }
-    return null;
-  }
-
-  Future<void> _saveTreeContext(String treeId, String? treeName) async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-
-      // ✅ เก็บหลายคีย์ เผื่อไฟล์อื่นอ่านคนละชื่อ
-      await prefs.setString('selected_tree_id', treeId);
-      await prefs.setString('treeId', treeId);
-      await prefs.setString('tree_id', treeId);
-      await prefs.setString('current_tree_id', treeId);
-      await prefs.setString('last_tree_id', treeId);
-
-      final tn = (treeName ?? '').trim();
-      if (tn.isNotEmpty) {
-        await prefs.setString('selected_tree_name', tn);
-        await prefs.setString('treeName', tn);
-        await prefs.setString('tree_name', tn);
-        await prefs.setString('current_tree_name', tn);
-        await prefs.setString('last_tree_name', tn);
-      }
-    } catch (e) {
-      _cameraInitError = 'เปิดกล้องไม่สำเร็จ: ${e.toString()}';
-      // แจ้งหลังเฟรมแรก (กัน context ยังไม่พร้อม)
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _cameraInitError != null) _toast(_cameraInitError!);
-      });
-    }
-  }
-
-  Future<void> _resolveTreeContext() async {
-    // 1) จาก widget
-    final wId = _t(widget.treeId);
-    final wName = _t(widget.treeName);
-    if (wId.isNotEmpty) {
-      _resolvedTreeId = wId;
-      _resolvedTreeName = wName.isNotEmpty ? wName : _resolvedTreeName;
-      await _saveTreeContext(_resolvedTreeId!, _resolvedTreeName);
-      if (mounted) setState(() {});
-      return;
-    }
-
-    // 2) จาก route arguments (รองรับทั้ง Map และ String)
-    String? aId;
-    String? aName;
-    final args = ModalRoute.of(context)?.settings.arguments;
-
-    if (args is Map) {
-      aId = _t(args['treeId'] ?? args['tree_id'] ?? args['id']);
-      aName = _t(args['treeName'] ?? args['tree_name'] ?? args['name']);
-      if (aId.isEmpty) aId = null;
-      if (aName.isEmpty) aName = null;
-    } else if (args != null) {
-      final s = _t(args);
-      if (s.isNotEmpty) aId = s;
-    }
-
-    // 3) จาก SharedPreferences (กรณี ScanPage ถูกเปิดจาก bottom nav ที่ไม่ได้ส่ง args)
-    String? pId;
-    String? pName;
-    try {
-      final prefs = await SharedPreferences.getInstance();
-
-      const idKeys = [
-        'selected_tree_id',
-        'treeId',
-        'tree_id',
-        'current_tree_id',
-        'active_tree_id',
-        'last_tree_id',
-      ];
-      for (final k in idKeys) {
-        final v = _t(prefs.getString(k));
-        if (v.isNotEmpty) {
-          pId = v;
-          break;
-        }
-      }
-
-      const nameKeys = [
-        'selected_tree_name',
-        'treeName',
-        'tree_name',
-        'current_tree_name',
-        'active_tree_name',
-        'last_tree_name',
-      ];
-      for (final k in nameKeys) {
-        final v = _t(prefs.getString(k));
-        if (v.isNotEmpty) {
-          pName = v;
-          break;
-        }
-      }
-    } catch (_) {
-      // ignore
-    }
-
-    final bestId = _firstNonEmpty([aId, pId]);
-    final bestName = _firstNonEmpty([aName, pName]);
-
-    if (bestId != null) {
-      _resolvedTreeId = bestId;
-      _resolvedTreeName = bestName;
-      await _saveTreeContext(bestId, bestName);
-      if (mounted) setState(() {});
-    }
-  }
-
-  void _bootstrapTreeContext() {
-    // ถ้ามีค่าอยู่แล้ว ให้จำไว้ทันที
-    final wId = _t(widget.treeId);
-    final wName = _t(widget.treeName);
-    if (wId.isNotEmpty) {
-      _resolvedTreeId = wId;
-      _resolvedTreeName = wName.isNotEmpty ? wName : null;
-      _saveTreeContext(wId, _resolvedTreeName);
-    }
-
-    // ต้องรอหลังเฟรมแรกเพื่อให้ ModalRoute.arguments พร้อม
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _resolveTreeContext();
-    });
-  }
+  // ✅ โหมดถ่าย/สแกนแบบไม่เลือกต้น (เปิดจากเมนูกล้อง): ไม่ผูกต้น, ไม่บันทึก
+  late final bool _standaloneMode;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _bootstrapTreeContext();
-    _initCam();
+
+    // ✅ ถ้าเปิดหน้า Scan โดยไม่ได้ส่ง treeId/treeName มา (เช่น กดเมนูกล้อง)
+    // ให้ถือว่าเป็นการ “ถ่าย/สแกนเฉยๆ” ไม่ดึงต้นจาก prefs และไม่บันทึก
+    _standaloneMode = widget.quickResultOnly ||
+        (_t(widget.treeId).isEmpty && _t(widget.treeName).isEmpty);
+
+    _init();
   }
 
   @override
@@ -233,114 +112,193 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final controller = _ctrl;
+    // ป้องกันกล้องพังเวลา app ไป background
+    final CameraController? controller = _ctrl;
     if (controller == null || !controller.value.isInitialized) return;
 
     if (state == AppLifecycleState.inactive ||
         state == AppLifecycleState.paused) {
       controller.dispose();
     } else if (state == AppLifecycleState.resumed) {
-      _initCam();
+      _initCameraSafely();
     }
   }
 
-  Future<void> _initCam() async {
-    try {
-      _cams = await availableCameras();
-      if (_cams.isEmpty) return;
-
-      _camIndex = 0;
-      await _startController(_cams[_camIndex]);
-    } catch (_) {
-      // ignore
-    }
+  Future<void> _init() async {
+    await _resolveTreeContext();
+    await _initCameraSafely();
   }
 
-  Future<void> _startController(CameraDescription desc) async {
-    final old = _ctrl;
-    if (old != null) {
-      await old.dispose();
-    }
-
-    final controller = CameraController(
-      desc,
-      ResolutionPreset.veryHigh,
-      enableAudio: false,
-      imageFormatGroup: ImageFormatGroup.jpeg,
-    );
-
-    _ctrl = controller;
-    try {
-      await controller.initialize();
-    } catch (e) {
-      _cameraInitError = 'เปิดกล้องไม่สำเร็จ: ${e.toString()}';
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _cameraInitError != null) _toast(_cameraInitError!);
-      });
+  Future<void> _resolveTreeContext() async {
+    // ✅ โหมดถ่ายเฉยๆ: ไม่ต้อง resolve ต้น และไม่ใช้ค่าเดิมจาก prefs
+    if (_standaloneMode) {
+      _resolvedTreeId = null;
+      _resolvedTreeName = null;
       return;
     }
 
-    try {
-      _minZoom = await controller.getMinZoomLevel();
-      _maxZoom = await controller.getMaxZoomLevel();
-      _zoom = _minZoom;
-    } catch (_) {
-      _minZoom = 1.0;
-      _maxZoom = 8.0;
-      _zoom = 1.0;
+    // ใช้ค่าที่ส่งเข้ามาก่อน
+    if (_t(widget.treeId).isNotEmpty) {
+      _resolvedTreeId = widget.treeId;
+      _resolvedTreeName = widget.treeName;
+      return;
     }
 
-    if (mounted) setState(() {});
+    // fallback: อ่านจาก SharedPreferences หรือค่าอื่น ๆ ที่โปรเจกต์คุณเก็บไว้
+    // (ถ้าในโปรเจกต์คุณเก็บ key อื่น ให้ปรับ key ตรงนี้)
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final lastTreeId = prefs.getString('selected_tree_id');
+      final lastTreeName = prefs.getString('selected_tree_name');
+      if (_t(lastTreeId).isNotEmpty) {
+        _resolvedTreeId = lastTreeId;
+        _resolvedTreeName = lastTreeName;
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _initCameraSafely() async {
+    try {
+      _cams = await availableCameras();
+      if (_cams.isEmpty) {
+        setState(() => _cameraInitError = 'ไม่พบกล้องในอุปกรณ์');
+        return;
+      }
+      _camIndex = 0;
+      await _startCamera(_cams[_camIndex]);
+    } catch (e) {
+      setState(() => _cameraInitError = 'เปิดกล้องไม่สำเร็จ: $e');
+    }
+  }
+
+  Future<void> _startCamera(CameraDescription cam) async {
+    try {
+      final controller = CameraController(
+        cam,
+        ResolutionPreset.high,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.jpeg,
+      );
+
+      _ctrl = controller;
+      await controller.initialize();
+
+      // ค่า zoom
+      _minZoom = await controller.getMinZoomLevel();
+      _maxZoom = await controller.getMaxZoomLevel();
+      _zoom = 1.0;
+      _baseZoom = _zoom;
+
+      // flash
+      await controller.setFlashMode(FlashMode.off);
+      _flashOn = false;
+
+      setState(() => _cameraInitError = null);
+    } catch (e) {
+      setState(() => _cameraInitError = 'เปิดกล้องไม่สำเร็จ: $e');
+    }
+  }
+
+  void _showTopNotice(String msg, {int ms = 2500}) {
+    _topNoticeTimer?.cancel();
+    setState(() => _topNotice = msg);
+    _topNoticeTimer = Timer(Duration(milliseconds: ms), () {
+      if (!mounted) return;
+      setState(() => _topNotice = null);
+    });
+  }
+
+  void _toast(String msg) => _showTopNotice(msg);
+
+  String _t(String? s) => (s ?? '').trim();
+
+  String _scanTitle() {
+    if (_standaloneMode) return 'กำลังสแกนใบส้ม';
+
+    final name = _t(_resolvedTreeName ?? widget.treeName);
+    if (name.isEmpty) return 'กำลังสแกนต้นส้ม';
+
+    // กันข้อความซ้ำ เช่น treeName เก็บเป็น "ต้นที่ 1" อยู่แล้ว
+    if (name.startsWith('ต้นที่')) return 'กำลังสแกน$name';
+    return 'กำลังสแกนต้นที่ $name';
+  }
+
+  String? _firstNonEmpty(List<String?> list) {
+    for (final s in list) {
+      final v = _t(s);
+      if (v.isNotEmpty) return v;
+    }
+    return null;
   }
 
   Future<void> _toggleFlash() async {
-    final c = _ctrl;
-    if (c == null) return;
+    final controller = _ctrl;
+    if (controller == null || !controller.value.isInitialized) return;
     try {
-      _flashOn = !_flashOn;
-      await c.setFlashMode(_flashOn ? FlashMode.torch : FlashMode.off);
-      if (mounted) setState(() {});
+      if (_flashOn) {
+        await controller.setFlashMode(FlashMode.off);
+      } else {
+        await controller.setFlashMode(FlashMode.torch);
+      }
+      setState(() => _flashOn = !_flashOn);
     } catch (_) {}
   }
 
   Future<void> _switchCamera() async {
     if (_cams.isEmpty) return;
     _camIndex = (_camIndex + 1) % _cams.length;
-    await _startController(_cams[_camIndex]);
+    await _ctrl?.dispose();
+    await _startCamera(_cams[_camIndex]);
   }
 
-  Future<void> _setZoom(double z) async {
-    final c = _ctrl;
-    if (c == null) return;
-    final next = z.clamp(_minZoom, _maxZoom);
-    _zoom = next;
-    try {
-      await c.setZoomLevel(next);
-    } catch (_) {}
-    if (mounted) setState(() {});
-  }
-
+  // ====== Zoom (pinch) ======
   void _onScaleStart(ScaleStartDetails d) {
     _baseZoom = _zoom;
   }
 
-  void _onScaleUpdate(ScaleUpdateDetails d) {
-    if (d.scale == 1.0) return;
-    final next = _baseZoom * d.scale;
-    _setZoom(next);
+  void _onScaleUpdate(ScaleUpdateDetails d) async {
+    final controller = _ctrl;
+    if (controller == null || !controller.value.isInitialized) return;
+
+    final newZoom = (_baseZoom * d.scale).clamp(_minZoom, _maxZoom);
+    _zoom = newZoom;
+    try {
+      await controller.setZoomLevel(newZoom);
+    } catch (_) {}
   }
 
+  // =============================
+  // ✅ ถ่ายรูปเป็นไฟล์ (Camera)
+  // =============================
   Future<File?> _takePictureToFile() async {
-    final c = _ctrl;
-    if (c == null || !c.value.isInitialized) return null;
+    final controller = _ctrl;
+    if (controller == null || !controller.value.isInitialized) {
+      return null;
+    }
     try {
-      final xfile = await c.takePicture();
-      return File(xfile.path);
+      final x = await controller.takePicture();
+      return File(x.path);
     } catch (_) {
       return null;
     }
   }
 
+  // =============================
+  // ✅ fallback ถ่ายผ่าน image_picker (camera)
+  // =============================
+  Future<File?> _pickFromCameraFallback() async {
+    try {
+      final x = await _picker.pickImage(source: ImageSource.camera);
+      if (x == null) return null;
+      return File(x.path);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // =============================
+  // ✅ เลือกจากแกลลอรี่
+  // =============================
   Future<File?> _pickFromGallery() async {
     try {
       final x = await _picker.pickImage(source: ImageSource.gallery);
@@ -351,117 +309,83 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
     }
   }
 
+  // =============================
+  // ✅ เรียกโมเดล API (multipart)
+  // =============================
+  Future<Map<String, dynamic>?> _callModelApi(File imageFile) async {
+    if (!kUseRealModelApi) {
+      // mock result
+      await Future<void>.delayed(const Duration(seconds: 1));
+      return {
+        'disease_name': 'ใบจุดดำ',
+        'disease_id': '1',
+        'compare_image_url': null,
+        'confidence': 0.87,
+        'leaf_confidence': 0.95,
+      };
+    }
 
-Future<File?> _pickFromCameraFallback() async {
-  try {
-    // ใช้ image_picker เป็น fallback เผื่อ CameraController initialize ไม่สำเร็จ
-    // + ลดขนาดไฟล์ด้วย imageQuality/maxWidth เพื่อกันปัญหาไฟล์ใหญ่เกินฝั่ง API
-    final x = await _picker.pickImage(
-      source: ImageSource.camera,
-      preferredCameraDevice: CameraDevice.rear,
-      imageQuality: 88,
-      maxWidth: 1600,
-      maxHeight: 1600,
-    );
-    if (x == null) return null;
-    return File(x.path);
-  } catch (_) {
-    return null;
+    final uri = Uri.parse('$kModelApiBase$kModelPredictPath');
+
+    try {
+      final req = http.MultipartRequest('POST', uri);
+      req.files.add(await http.MultipartFile.fromPath('file', imageFile.path));
+
+      final streamed = await req.send().timeout(const Duration(seconds: 45));
+      final res = await http.Response.fromStream(streamed);
+
+      if (res.statusCode < 200 || res.statusCode >= 300) {
+        return {
+          'ok': false,
+          'error': 'HTTP ${res.statusCode}',
+          'detail': res.body,
+        };
+      }
+
+      final Map<String, dynamic> jsonMap = jsonDecode(res.body);
+      return jsonMap;
+    } on TimeoutException {
+      return {
+        'ok': false,
+        'error': 'timeout',
+        'detail': 'หมดเวลารอโมเดลวิเคราะห์ กรุณาลองใหม่',
+      };
+    } catch (e) {
+      return {
+        'ok': false,
+        'error': 'exception',
+        'detail': e.toString(),
+      };
+    }
   }
-}
-  // =========================
-  // ✅ FIX: กล้องไม่ยืด/ไม่เพี้ยนสัดส่วน
-  // =========================
-  Widget _buildCameraPreview(Size size) {
-    final controller = _ctrl;
-    if (controller == null) return const SizedBox.shrink();
 
-    final value = controller.value;
-    if (!value.isInitialized) return const SizedBox.shrink();
+  // =============================
+  // ✅ แสดงหน้า AnalysisLoadingPage ระหว่างรอโมเดลวิเคราะห์
+  // =============================
+  static const String _analysisLoadingRouteName = '__analysis_loading__';
 
-    final ps = value.previewSize;
-    if (ps == null) return Center(child: CameraPreview(controller));
-
-    final isPortrait =
-        MediaQuery.of(context).orientation == Orientation.portrait;
-
-    // ✅ บนมือถือส่วนใหญ่ previewSize จะกลับแกนในโหมด Portrait
-    final previewW = isPortrait ? ps.height : ps.width;
-    final previewH = isPortrait ? ps.width : ps.height;
-
-    return ClipRect(
-      child: FittedBox(
-        fit: BoxFit.cover,
-        alignment: Alignment.center,
-        child: SizedBox(
-          width: previewW,
-          height: previewH,
-          child: CameraPreview(controller),
-        ),
+  Future<T?> _runWithAnalysisLoading<T>(Future<T?> Function() task) async {
+    // push หน้า loading (กันกด back ด้วย WillPopScope ใน AnalysisLoadingPage)
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        settings: const RouteSettings(name: _analysisLoadingRouteName),
+        builder: (_) => const AnalysisLoadingPage(),
       ),
     );
-  }
 
+    // ให้มีเวลาวาดหน้า loading ก่อนเริ่มยิง API (กันเครื่องช้า/จอค้าง)
+    await Future<void>.delayed(const Duration(milliseconds: 60));
 
-Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
-  if (!kUseRealModelApi) {
-    return {
-      "ok": true,
-      "disease_name": "ใบจุดดำ",
-      "confidence": 0.91,
-      "disease_id": 1,
-    };
-  }
-
-  final uri = Uri.parse("$kModelApiBase$kModelPredictPath");
-
-  try {
-    final req = http.MultipartRequest('POST', uri);
-    req.files.add(await http.MultipartFile.fromPath('file', imgFile.path));
-
-    final res = await req.send();
-    final body = await res.stream.bytesToString();
-
-    // ✅ ถ้า HTTP ไม่สำเร็จ ให้คืน error เป็น Map เพื่อให้ caller แสดงข้อความได้
-    if (res.statusCode < 200 || res.statusCode >= 300) {
-      String msg = 'Model API error (${res.statusCode})';
-      try {
-        final decodedErr = json.decode(body);
-        if (decodedErr is Map && decodedErr['detail'] != null) {
-          msg = decodedErr['detail'].toString();
-        }
-      } catch (_) {
-        // ignore
-      }
-      return {"ok": false, "status_code": res.statusCode, "error": msg};
-    }
-
-    final decoded = json.decode(body);
-
-    if (decoded is Map<String, dynamic>) return decoded;
-    if (decoded is Map) return Map<String, dynamic>.from(decoded);
-    return null;
-  } catch (e) {
-    return {"ok": false, "error": e.toString()};
-  }
-}
-
-  void _toast(String msg) {
-    if (!mounted) return;
-
-    // ซ่อน SnackBar เก่า (เผื่อมีหลงมา)
     try {
-      ScaffoldMessenger.of(context).clearSnackBars();
-    } catch (_) {
-      // ignore
+      return await task();
+    } finally {
+      if (mounted) {
+        // pop เฉพาะถ้าหน้าบนสุดคือ loading เท่านั้น (ป้องกัน pop หน้าอื่นผิด)
+        Navigator.of(context).popUntil(
+          (route) => route.settings.name != _analysisLoadingRouteName,
+        );
+      }
     }
-
-    setState(() => _topNoticeMsg = msg);
-    _topNoticeTimer?.cancel();
-    _topNoticeTimer = Timer(const Duration(seconds: 3), () {
-      if (!mounted) return;
-      setState(() => _topNoticeMsg = null);
-    });
   }
 
   /// ✅ ปรับให้ตรงกับ constructor จริงของ DiseaseDiagnosisPage
@@ -509,6 +433,29 @@ Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
     );
   }
 
+  Future<void> _goToQuickResultPage({
+    required File imageFile,
+    required String diseaseId,
+    required String diseaseNameTh,
+    String? diseaseNameEn,
+    String? compareImageUrl,
+    double? scanConfidence,
+  }) async {
+    PersistentNavBarNavigator.pushNewScreen(
+      context,
+      screen: DiseaseQuickResultPage(
+        diseaseId: diseaseId,
+        diseaseNameTh: diseaseNameTh,
+        diseaseNameEn: diseaseNameEn,
+        compareImageUrl: compareImageUrl,
+        userImageFile: imageFile,
+        scanConfidence: scanConfidence,
+      ),
+      withNavBar: false,
+      pageTransitionAnimation: PageTransitionAnimation.cupertino,
+    );
+  }
+
   Future<void> _onCapturePressed() async {
     if (_isBusy) return;
     setState(() => _isBusy = true);
@@ -532,18 +479,8 @@ Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
         return;
       }
 
-      // ✅ ยืนยันรูป (แสดงเฉพาะส่วนในกรอบใบไม้)
-      final ok = await Navigator.of(context).push<bool>(
-        MaterialPageRoute(
-          builder: (_) => ConfirmCapturePage(imagePath: imageFile.path),
-          fullscreenDialog: true,
-        ),
-      );
-
-      if (ok != true) return;
-
-      // ✅ ส่งโมเดล -> ไปหน้าวินิจฉัย
-      final result = await _callModelApi(imageFile);
+      // ✅ ส่งโมเดล -> ไปหน้าวินิจฉัย (แสดงหน้า loading ระหว่างรอ)
+      final result = await _runWithAnalysisLoading(() => _callModelApi(imageFile));
 
       if (result != null && result['ok'] == false) {
         // ✅ กรณี API ตอบกลับ ok:false (เช่น ไม่พบใบส้ม / ความมั่นใจต่ำ)
@@ -557,7 +494,6 @@ Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
         return;
       }
 
-
       String diseaseName = 'ไม่ทราบโรค';
       String? diseaseId;
       String? compareImageUrl;
@@ -582,8 +518,7 @@ Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
           scanConfidence = double.tryParse(c.toString());
         }
 
-        // ✅ percent ความมั่นใจว่าเป็น “ใบส้ม” (ถ้า backend ส่งมา)
-        final lc = result['leaf_confidence'];
+        final lc = result['leaf_confidence'] ?? result['leafConfidence'];
         if (lc is num) {
           leafConfidence = lc.toDouble();
         } else if (lc != null) {
@@ -591,26 +526,46 @@ Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
         }
       }
 
-      // ✅ ถ้าโมเดลไม่ส่ง disease_id มา ใช้ map ชื่อโรค -> id
-      if (diseaseId == null || diseaseId.trim().isEmpty) {
+      // ✅ map id ถ้าโมเดลไม่ส่งมา
+      if (_t(diseaseId).isEmpty) {
         final meta = kDiseaseNameMap[diseaseName];
-        if (meta != null) diseaseId = meta.id;
+        if (meta != null) {
+          diseaseId = meta.id;
+        }
       }
 
-      if (diseaseId == null || diseaseId.trim().isEmpty) {
-        _toast('โมเดลไม่ส่ง disease_id และหา id จากชื่อโรคไม่ได้');
+      // ✅ ถ้ายังไม่เจอ diseaseId ให้เตือน
+      if (_t(diseaseId).isEmpty) {
+        _toast('ไม่พบรหัสโรคจากโมเดล');
         return;
       }
 
-      // ✅ ส่งชื่อโรคไปเป็น diseaseNameTh (ไม่ทำให้ constructor พัง)
-      await _goToDiagnosisPage(
-        imageFile: imageFile,
-        diseaseId: diseaseId,
-        diseaseNameTh: diseaseName,
-        compareImageUrl: compareImageUrl,
-        scanConfidence: scanConfidence,
-        leafConfidence: leafConfidence,
-      );
+      final meta = kDiseaseNameMap[diseaseName];
+      final diseaseNameTh = meta?.th ?? diseaseName;
+      final diseaseNameEn = meta?.en;
+
+      // ✅ ถ้าเปิดจากเมนูกล้อง (ไม่เลือกต้น) -> ไปหน้าแสดงผลแบบเร็ว (ไม่บันทึก)
+      if (_standaloneMode) {
+        await _goToQuickResultPage(
+          imageFile: imageFile,
+          diseaseId: diseaseId!,
+          diseaseNameTh: diseaseNameTh,
+          diseaseNameEn: diseaseNameEn,
+          compareImageUrl: compareImageUrl,
+          scanConfidence: scanConfidence,
+        );
+      } else {
+        // ✅ ไปหน้า diagnosis (ผูกต้น + เข้ากระบวนการถาม/บันทึก)
+        await _goToDiagnosisPage(
+          imageFile: imageFile,
+          diseaseId: diseaseId!,
+          diseaseNameTh: diseaseNameTh,
+          diseaseNameEn: diseaseNameEn,
+          compareImageUrl: compareImageUrl,
+          scanConfidence: scanConfidence,
+          leafConfidence: leafConfidence,
+        );
+      }
     } finally {
       if (mounted) setState(() => _isBusy = false);
     }
@@ -624,13 +579,30 @@ Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
       final file = await _pickFromGallery();
       if (file == null) return;
 
-      final result = await _callModelApi(file);
+      if (!await file.exists()) {
+        _toast('ไม่พบไฟล์รูปภาพ (ลองเลือกใหม่)');
+        return;
+      }
+
+      // ✅ ส่งโมเดล -> ไปหน้าวินิจฉัย (แสดงหน้า loading ระหว่างรอ)
+      final result = await _runWithAnalysisLoading(() => _callModelApi(file));
+
+      if (result != null && result['ok'] == false) {
+        final msg = (result['detail'] ??
+                result['error'] ??
+                result['disease_name'] ??
+                result['message'] ??
+                'ไม่สามารถวิเคราะห์ภาพได้ กรุณาเลือกรูปใบส้มให้ชัด')
+            .toString();
+        _toast(msg);
+        return;
+      }
 
       String diseaseName = 'ไม่ทราบโรค';
       String? diseaseId;
       String? compareImageUrl;
-      double? scanConfidence; // 0..1 หรือ 0..100
-      double? leafConfidence; // 0..1 หรือ 0..100
+      double? scanConfidence;
+      double? leafConfidence;
 
       if (result != null) {
         final dn = result['disease_name'] ?? result['label'] ?? result['name'];
@@ -642,7 +614,6 @@ Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
         final cmp = result['compare_image_url'] ?? result['compareImageUrl'];
         if (cmp != null) compareImageUrl = cmp.toString();
 
-        // ✅ percent ความมั่นใจจากโมเดล (บางทีอาจส่งมาเป็น 0..1 หรือ 0..100)
         final c = result['confidence'];
         if (c is num) {
           scanConfidence = c.toDouble();
@@ -650,8 +621,7 @@ Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
           scanConfidence = double.tryParse(c.toString());
         }
 
-        // ✅ percent ความมั่นใจว่าเป็น “ใบส้ม” (ถ้า backend ส่งมา)
-        final lc = result['leaf_confidence'];
+        final lc = result['leaf_confidence'] ?? result['leafConfidence'];
         if (lc is num) {
           leafConfidence = lc.toDouble();
         } else if (lc != null) {
@@ -659,360 +629,289 @@ Future<Map<String, dynamic>?> _callModelApi(File imgFile) async {
         }
       }
 
-      if (diseaseId == null || diseaseId.trim().isEmpty) {
+      if (_t(diseaseId).isEmpty) {
         final meta = kDiseaseNameMap[diseaseName];
         if (meta != null) diseaseId = meta.id;
       }
 
-      if (diseaseId == null || diseaseId.trim().isEmpty) {
-        _toast('โมเดลไม่ส่ง disease_id และหา id จากชื่อโรคไม่ได้');
+      if (_t(diseaseId).isEmpty) {
+        _toast('ไม่พบรหัสโรคจากโมเดล');
         return;
       }
 
-      await _goToDiagnosisPage(
-        imageFile: file,
-        diseaseId: diseaseId,
-        diseaseNameTh: diseaseName,
-        compareImageUrl: compareImageUrl,
-        scanConfidence: scanConfidence,
-        leafConfidence: leafConfidence,
-      );
+      final meta = kDiseaseNameMap[diseaseName];
+      final diseaseNameTh = meta?.th ?? diseaseName;
+      final diseaseNameEn = meta?.en;
+
+      if (_standaloneMode) {
+        await _goToQuickResultPage(
+          imageFile: file,
+          diseaseId: diseaseId!,
+          diseaseNameTh: diseaseNameTh,
+          diseaseNameEn: diseaseNameEn,
+          compareImageUrl: compareImageUrl,
+          scanConfidence: scanConfidence,
+        );
+      } else {
+        await _goToDiagnosisPage(
+          imageFile: file,
+          diseaseId: diseaseId!,
+          diseaseNameTh: diseaseNameTh,
+          diseaseNameEn: diseaseNameEn,
+          compareImageUrl: compareImageUrl,
+          scanConfidence: scanConfidence,
+          leafConfidence: leafConfidence,
+        );
+      }
     } finally {
       if (mounted) setState(() => _isBusy = false);
     }
   }
 
-  // ====== overlay ใบไม้ ======
-  Path _leafPathFromRect(Rect r) {
-    final cx = r.center.dx;
-    final top = r.top;
-    final bottom = r.bottom;
-    final w = r.width;
-    final h = r.height;
-
-    final p = Path();
-
-    p.moveTo(cx, top);
-    p.cubicTo(
-      cx - w * 0.55,
-      top + h * 0.10,
-      cx - w * 0.55,
-      top + h * 0.65,
-      cx,
-      bottom,
-    );
-    p.cubicTo(
-      cx + w * 0.55,
-      top + h * 0.65,
-      cx + w * 0.55,
-      top + h * 0.10,
-      cx,
-      top,
-    );
-    p.close();
-    return p;
-  }
-
+  // =============================
+  // UI
+  // =============================
   @override
   Widget build(BuildContext context) {
-    final size = MediaQuery.of(context).size;
-    final mq = MediaQuery.of(context);
-
-    // ✅ คำนวณพื้นที่ที่ SafeArea ใช้งานจริง (พิกัดใน SafeArea เริ่มที่ 0..safeH)
-    final safeH = size.height - mq.padding.top - mq.padding.bottom;
-
-    // ✅ กันพื้นที่ด้านบน/ล่างสำหรับปุ่มและข้อความ (ไม่เปลี่ยน UI เดิม)
-    const reservedTop = 70.0;   // แถบปุ่มปิด + ไอคอนด้านบน
-    const reservedBottom = 210.0; // ข้อความ + ปุ่มถ่าย + ระยะหายใจ
-
-    final availableH = (safeH - reservedTop - reservedBottom).clamp(220.0, safeH);
-
-    // สัดส่วนเดิมของกรอบใบไม้ (0.70 : 0.95)
-    const leafRatio = 0.70 / 0.95;
-
-    // สูงสุดอิงความกว้างหน้าจอเหมือนเดิม แต่ไม่ให้ล้ำพื้นที่ด้านล่าง
-    // ✅ ลดขนาดกรอบใบไม้ลง (ใบส้มโดยทั่วไปไม่ใหญ่มาก)
-    final targetLeafH = size.width * 0.78;
-    final leafH = targetLeafH.clamp(220.0, availableH);
-
-    // กว้างตามสัดส่วน และ clamp ไม่ให้กว้าง/แคบเกินไป
-    final leafW = (leafH * leafRatio).clamp(size.width * 0.55, size.width * 0.78);
-
-    final left = (size.width - leafW) / 2;
-    final top = reservedTop + (availableH - leafH) / 2;
-
-    final leafRect = Rect.fromLTWH(left, top, leafW, leafH);
-    final leafPath = _leafPathFromRect(leafRect);
+    final controller = _ctrl;
 
     return Scaffold(
       backgroundColor: Colors.black,
-      body: SafeArea(
-        child: Stack(
-          children: [
-            Positioned.fill(child: _buildCameraPreview(size)),
-
-
-// ✅ หากกล้องยังไม่พร้อม ให้แสดงตัวโหลด (ยังสามารถกดแกลลอรี่/ปุ่มถ่ายแบบ fallback ได้)
-if (_ctrl == null || _ctrl?.value.isInitialized != true)
-  Positioned.fill(
-    child: IgnorePointer(
-      child: Center(
-        child: CircularProgressIndicator(color: Colors.white),
-      ),
-    ),
-  ),
-
-            // mask รอบนอกใบไม้
-            Positioned.fill(
-              child: IgnorePointer(
-                child: CustomPaint(painter: _LeafMaskPainter(leafPath)),
-              ),
-            ),
-
-            // ขอบใบไม้ + เส้นกลาง
-            Positioned.fill(
-              child: IgnorePointer(
-                child: CustomPaint(painter: _LeafStrokePainter(leafPath)),
-              ),
-            ),
-
-            // ✅ ขยับข้อความขึ้นด้านบนเล็กน้อย (ไม่ให้ชิดปุ่มถ่ายภาพ)
-            Positioned(
-              bottom: 150,
-              left: 0,
-              right: 0,
-              child: Center(
-                child: Text(
-                  'นำ “ใบส้ม 1 ใบ” ให้อยู่ในกรอบใบไม้',
-                  style: TextStyle(
-                    color: Colors.white.withOpacity(0.92),
-                    fontSize: 16,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ),
-            ),
-
-            // X
-            Positioned(
-              top: 12,
-              left: 12,
-              child: _RoundIconButton(
-                icon: Icons.close,
-                onTap: () => Navigator.pop(context),
-              ),
-            ),
-
-            // flash + gallery
-            Positioned(
-              top: 12,
-              right: 12,
-              child: Row(
-                children: [
-                  _RoundIconButton(
-                    icon: _flashOn ? Icons.flash_on : Icons.flash_off,
-                    onTap: _toggleFlash,
-                  ),
-                  const SizedBox(width: 10),
-                  _RoundIconButton(
-                    icon: Icons.image_outlined,
-                    onTap: _onGalleryPressed,
-                  ),
-                ],
-              ),
-            ),
-
-            // ✅ แจ้งเตือนแบบบล็อกด้านบน-กลางหน้าจอ (พื้นหลังสีขาว)
-            if (_topNoticeMsg != null)
-              Positioned(
-                top: 70,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 520),
-                    child: Material(
-                      color: Colors.transparent,
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(14),
-                        onTap: () => setState(() => _topNoticeMsg = null),
-                        child: Container(
-                          margin: const EdgeInsets.symmetric(horizontal: 16),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 14,
-                            vertical: 12,
-                          ),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(14),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withOpacity(0.25),
-                                blurRadius: 14,
-                                offset: const Offset(0, 8),
-                              ),
-                            ],
-                          ),
-                          child: Text(
-                            _topNoticeMsg!,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              color: Colors.black87,
-                              fontSize: 14,
-                              fontWeight: FontWeight.w700,
-                              height: 1.3,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-
-            if (_cams.length > 1)
-              Positioned(
-                right: 14,
-                bottom: 170,
-                child: _RoundIconButton(
-                  icon: Icons.cameraswitch,
-                  onTap: _switchCamera,
-                ),
-              ),
-
-            Positioned(
-              left: 14,
-              bottom: 142,
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                  color: Colors.black54,
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  '${_zoom.toStringAsFixed(1)}x',
-                  style: const TextStyle(color: Colors.white, fontSize: 14),
-                ),
-              ),
-            ),
-
-            // ปุ่มถ่าย
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 32,
-              child: Center(
-                child: GestureDetector(
-                  onTap: _onCapturePressed,
-                  onScaleStart: _onScaleStart,
-                  onScaleUpdate: _onScaleUpdate,
-                  child: Container(
-                    width: 84,
-                    height: 84,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 4),
-                    ),
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: controller == null || !controller.value.isInitialized
+                ? Container(
+                    color: Colors.black,
                     child: Center(
-                      child: Container(
-                        width: 64,
-                        height: 64,
-                        decoration: const BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: kPrimaryGreen,
-                        ),
+                      child: Text(
+                        _cameraInitError ?? 'กำลังเปิดกล้อง...',
+                        style: const TextStyle(color: Colors.white70),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  )
+                : GestureDetector(
+                    onScaleStart: _onScaleStart,
+                    onScaleUpdate: _onScaleUpdate,
+                    child: CameraPreview(controller),
+                  ),
+          ),
+
+          // ✅ ปุ่มปิด
+          Positioned(
+            top: 44,
+            left: 16,
+            child: _roundIcon(
+              icon: Icons.close,
+              onTap: () => Navigator.pop(context),
+            ),
+          ),
+
+          // ✅ ปุ่ม flash / gallery
+          Positioned(
+            top: 44,
+            right: 16,
+            child: Row(
+              children: [
+                _roundIcon(
+                  icon: _flashOn ? Icons.flash_on : Icons.flash_off,
+                  onTap: _toggleFlash,
+                ),
+                const SizedBox(width: 12),
+                _roundIcon(
+                  icon: Icons.photo_library_outlined,
+                  onTap: _onGalleryPressed,
+                ),
+              ],
+            ),
+          ),
+
+          // ✅ ข้อความบนกลาง (กำลังสแกนต้นที่ X)
+          Positioned(
+            top: 105,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                decoration: BoxDecoration(
+                  color: kPrimaryGreen,
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: Text(
+                  _scanTitle(),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // ✅ กรอบใบไม้ (overlay)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: CustomPaint(
+                painter: _LeafFramePainter(),
+              ),
+            ),
+          ),
+
+          // ✅ ข้อความแนะนำด้านล่าง
+          Positioned(
+            bottom: 140,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: Text(
+                'นำ “ใบส้ม 1 ใบ” ให้อยู่ในกรอบใบไม้',
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.8),
+                  fontSize: 14,
+                ),
+              ),
+            ),
+          ),
+
+          // ✅ ปุ่มถ่าย
+          Positioned(
+            bottom: 52,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: GestureDetector(
+                onTap: _onCapturePressed,
+                child: Container(
+                  width: 78,
+                  height: 78,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 4),
+                  ),
+                  child: Center(
+                    child: Container(
+                      width: 56,
+                      height: 56,
+                      decoration: const BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: kPrimaryGreen,
                       ),
                     ),
                   ),
                 ),
               ),
             ),
+          ),
 
-            if (_isBusy)
-              Positioned.fill(
+          // ✅ บล็อกแจ้งเตือนด้านบน (แทน SnackBar)
+          if (_topNotice != null)
+            Positioned(
+              top: 138,
+              left: 16,
+              right: 16,
+              child: Center(
                 child: Container(
-                  color: Colors.black45,
-                  child: const Center(
-                    child: CircularProgressIndicator(color: Colors.white),
+                  constraints: const BoxConstraints(maxWidth: 520),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(14),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(0.25),
+                        blurRadius: 12,
+                        offset: const Offset(0, 6),
+                      ),
+                    ],
+                  ),
+                  child: Text(
+                    _topNotice!,
+                    style: const TextStyle(
+                      color: Colors.black,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    textAlign: TextAlign.center,
                   ),
                 ),
               ),
-          ],
-        ),
+            ),
+        ],
       ),
     );
   }
-}
 
-class _LeafMaskPainter extends CustomPainter {
-  final Path leafPath;
-  _LeafMaskPainter(this.leafPath);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final full = Path()
-      ..addRect(Rect.fromLTWH(0, 0, size.width, size.height));
-    final mask = Path.combine(PathOperation.difference, full, leafPath);
-
-    final paint = Paint()
-      ..color = Colors.black.withOpacity(0.55)
-      ..style = PaintingStyle.fill;
-
-    canvas.drawPath(mask, paint);
-  }
-
-  @override
-  bool shouldRepaint(covariant _LeafMaskPainter oldDelegate) {
-    return oldDelegate.leafPath != leafPath;
-  }
-}
-
-class _LeafStrokePainter extends CustomPainter {
-  final Path leafPath;
-  _LeafStrokePainter(this.leafPath);
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final stroke = Paint()
-      ..color = Colors.white
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 4;
-
-    canvas.drawPath(leafPath, stroke);
-  }
-
-  @override
-  bool shouldRepaint(covariant _LeafStrokePainter oldDelegate) {
-    return oldDelegate.leafPath != leafPath;
-  }
-}
-
-class _RoundIconButton extends StatelessWidget {
-  final IconData icon;
-  final VoidCallback onTap;
-
-  const _RoundIconButton({
-    required this.icon,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
+  Widget _roundIcon({required IconData icon, required VoidCallback onTap}) {
+    return GestureDetector(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(28),
       child: Container(
-        width: 46,
-        height: 46,
+        width: 42,
+        height: 42,
         decoration: BoxDecoration(
-          color: Colors.black54,
-          borderRadius: BorderRadius.circular(28),
+          color: Colors.black.withOpacity(0.35),
+          shape: BoxShape.circle,
+          border: Border.all(color: Colors.white24),
         ),
-        child: Center(
-          child: Icon(icon, color: Colors.white),
-        ),
+        child: Icon(icon, color: Colors.white),
       ),
     );
   }
+}
+
+// =============================
+// Painter วาดกรอบใบไม้
+// =============================
+class _LeafFramePainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 3.0
+      ..color = Colors.white.withOpacity(0.92);
+
+    // วาดเป็นรูปทรงใบไม้แบบง่าย ๆ (Bezier)
+    final path = Path();
+
+    final cx = size.width / 2;
+    final top = size.height * 0.22;
+    final bottom = size.height * 0.72;
+    final w = size.width * 0.32;
+
+    path.moveTo(cx, top);
+    path.cubicTo(
+      cx + w,
+      top + (bottom - top) * 0.25,
+      cx + w * 0.85,
+      top + (bottom - top) * 0.78,
+      cx,
+      bottom,
+    );
+    path.cubicTo(
+      cx - w * 0.85,
+      top + (bottom - top) * 0.78,
+      cx - w,
+      top + (bottom - top) * 0.25,
+      cx,
+      top,
+    );
+
+    canvas.drawPath(path, paint);
+
+    // เส้นกลาง
+    final midPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..color = Colors.white.withOpacity(0.55);
+
+    canvas.drawLine(
+      Offset(cx, top + 8),
+      Offset(cx, bottom - 8),
+      midPaint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

@@ -434,13 +434,13 @@ class _SharePageState extends State<SharePage> {
       barrierColor: Colors.black54,
       builder: (ctx) {
         final mq = MediaQuery.of(ctx);
-        // ✅ แก้ไข 1: ไม่ต้องคำนวณ bottom ตรงนี้
-        final maxH = mq.size.height - 48;
+        final bottom = mq.viewInsets.bottom;
+        // เว้นขอบล่างเพิ่มตามความสูงคีย์บอร์ด เพื่อให้บล็อกไม่หายไปเวลาพิมพ์
+        final maxH = mq.size.height - (24 + 24 + bottom);
 
         return Dialog(
             backgroundColor: Colors.white,
-            // ✅ แก้ไข 2: ใช้ padding คงที่เพื่อให้ Dialog อยู่กลางจอ
-            insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+            insetPadding: EdgeInsets.fromLTRB(16, 24, 16, 24 + bottom),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
             child: ConstrainedBox(
               constraints: BoxConstraints(maxHeight: maxH < 220 ? 220.0 : maxH),
@@ -751,8 +751,7 @@ class _SharePageState extends State<SharePage> {
           TextField(
             controller: controller,
             maxLines: maxLines,
-            // ✅ แก้ไข 3: ลด scrollPadding ลงจาก 180 เหลือ 90
-            scrollPadding: const EdgeInsets.only(bottom: 90),
+            scrollPadding: const EdgeInsets.only(bottom: 180),
             decoration: InputDecoration(
               isDense: true,
               hintText: hintText,
@@ -776,13 +775,13 @@ class _SharePageState extends State<SharePage> {
       barrierColor: Colors.black54,
       builder: (ctx) {
         final mq = MediaQuery.of(ctx);
-        // ✅ แก้ไข 4: ไม่ต้องคำนวณ bottom
-        final maxH = mq.size.height - 48;
+        final bottom = mq.viewInsets.bottom;
+        // เว้นขอบล่างเพิ่มตามความสูงคีย์บอร์ด เพื่อให้บล็อกไม่หายไปเวลาพิมพ์
+        final maxH = mq.size.height - (24 + 24 + bottom);
 
         return Dialog(
             backgroundColor: Colors.white,
-            // ✅ แก้ไข 5: ใช้ padding คงที่
-            insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+            insetPadding: EdgeInsets.fromLTRB(16, 24, 16, 24 + bottom),
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
             child: ConstrainedBox(
               constraints: BoxConstraints(maxHeight: maxH < 220 ? 220.0 : maxH),

@@ -677,9 +677,10 @@ class _OrchardManagementQuestionsPageState
                   const SizedBox(height: 18),
                   Text(
                     q.text,
+                    textAlign: TextAlign.center,
                     style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w700,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w800,
                       height: 1.25,
                     ),
                   ),

@@ -3,6 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 
+// ✅ หน้าเลือกวันที่เริ่มพ่นยา (ให้วางไฟล์นี้ไว้โฟลเดอร์เดียวกัน)
+import 'select_start_spray_date_page.dart';
+
 /// ✅ API base URL
 const String API_BASE = String.fromEnvironment(
   'API_BASE',
@@ -455,6 +458,12 @@ class _TreatmentAdvicePageState extends State<TreatmentAdvicePage> {
 
   /// ✅ สร้าง care_reminders หลายวัน เพื่อให้ขึ้นในปฏิทินหน้า Home
   Future<void> _createSprayReminders() async {
+    // ค่าเดิม (เผื่อถูกเรียกจากที่อื่น) -> เริ่มวันนี้
+    return _createSprayRemindersWithFirstDate(_dateOnly(DateTime.now()));
+  }
+
+  /// ✅ สร้าง care_reminders โดยรับ "วันเริ่มพ่น" จากผู้ใช้
+  Future<void> _createSprayRemindersWithFirstDate(DateTime firstDate) async {
     final token = await _readToken();
     if (token == null) return;
 
@@ -471,7 +480,7 @@ class _TreatmentAdvicePageState extends State<TreatmentAdvicePage> {
     final chemName = (_recommendedChemicalName ?? '').trim();
     final baseNote = chemName.isNotEmpty ? 'พ่นยา: $chemName' : 'พ่นยา';
 
-    final start = _dateOnly(DateTime.now());
+    final start = _dateOnly(firstDate);
 
     for (int i = 0; i < sprays; i++) {
       final d = start.add(Duration(days: interval * i));
@@ -690,7 +699,24 @@ class _TreatmentAdvicePageState extends State<TreatmentAdvicePage> {
   }
 
   Future<void> _onAcceptPlan() async {
+    if (_accepted) return;
     setState(() => _accepted = true);
+
+    // ✅ ให้ผู้ใช้เลือก "วันเริ่มพ่นยา" ก่อนสร้างรายการในปฏิทิน
+    final selectedStartDate = await Navigator.of(context).push<DateTime>(
+      MaterialPageRoute(
+        builder: (_) => SelectStartSprayDatePage(
+          initialDate: _dateOnly(DateTime.now()),
+          minDate: _dateOnly(DateTime.now()),
+        ),
+      ),
+    );
+
+    // ถ้าผู้ใช้กดกลับ/ยกเลิก -> ไม่สร้างแผน และเปิดให้กดปุ่มได้อีก
+    if (selectedStartDate == null) {
+      if (mounted) setState(() => _accepted = false);
+      return;
+    }
 
     try {
       // ✅ เซฟคำแนะนำซ้ำอีกรอบกันหลุด (กรณีโหลดเสร็จแล้วแต่ update ไม่เข้า)
@@ -704,8 +730,8 @@ class _TreatmentAdvicePageState extends State<TreatmentAdvicePage> {
         await _saveResolvedAdviceToHistory(toSave);
       }
 
-      // ✅ สร้างงานในปฏิทิน (care_reminders)
-      await _createSprayReminders();
+      // ✅ สร้างงานในปฏิทิน (care_reminders) โดยเริ่มจากวันที่ผู้ใช้เลือก
+      await _createSprayRemindersWithFirstDate(selectedStartDate);
     } catch (_) {
       // ignore
     }

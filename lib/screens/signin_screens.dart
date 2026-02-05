@@ -247,13 +247,28 @@ class _SignInScreenState extends State<SignInScreen> {
         if (userId != null) {
           await prefs.setInt('user_id', userId);
         }
+
         await prefs.setString('username', username);
+
+        // ✅ เงื่อนไขนำทางหลังเข้าสู่ระบบ:
+        // - ถ้าเป็นการสมัครใหม่ (pending_first_login_email ตรงกับอีเมลที่ล็อกอิน) -> ไปหน้า Share ก่อน
+        // - ครั้งต่อไป -> ไปหน้า Home
+        final pendingEmail =
+            (prefs.getString('pending_first_login_email') ?? '').trim().toLowerCase();
+        final currentEmail = _emailCtl.text.trim().toLowerCase();
+        final int initialIndex =
+            (pendingEmail.isNotEmpty && pendingEmail == currentEmail) ? 1 : 0;
+        if (initialIndex == 1) {
+          // ล้าง flag หลังใช้ครั้งแรก
+          await prefs.remove('pending_first_login_email');
+        }
 
         if (!mounted) return;
 
         Navigator.of(context).pushAndRemoveUntil(
           MaterialPageRoute(
-            builder: (_) => MainNav(initialUsername: username),
+            builder: (_) =>
+                MainNav(initialUsername: username, initialIndex: initialIndex),
           ),
           (route) => false,
         );
