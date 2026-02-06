@@ -9,8 +9,9 @@ import 'package:table_calendar/table_calendar.dart';
 // Import หน้า Setting
 import 'setting.dart';
 
-// ✅ ใช้ปฏิทินเลือกวันเริ่มพ่นยา (ตามไฟล์ของคุณ)
-import '../diagnosis/select_start_spray_date_page.dart';
+// ✅ เพิ่ม import หน้าติดตามผล + หน้ายินดีด้วย
+import 'treatment_followup_page.dart';
+import 'treatment_success_page.dart';
 
 // ยัง keep ไว้ตามโปรเจกต์เดิม (ไม่เปลี่ยน UI)
 import 'package:flutter_application_1/models/citrus_tree_record.dart';
@@ -122,18 +123,6 @@ class _FollowupCandidate {
   });
 
   String get lastKey => _ymd(lastPlanDate);
-}
-
-// ✅ ผลลัพธ์จากกล่องติดตามผล (Dialog)
-class _FollowupDialogResult {
-  final bool cured;
-  final DateTime? nextStartDate;
-
-  const _FollowupDialogResult._({required this.cured, this.nextStartDate});
-
-  const _FollowupDialogResult.cured() : this._(cured: true);
-  const _FollowupDialogResult.notCured(DateTime d)
-      : this._(cured: false, nextStartDate: d);
 }
 
 class _HomePageState extends State<HomePage> {
@@ -723,286 +712,7 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  
-
   // =========================================
-  // ✅ Dialog ติดตามผล (ซ้อนบนหน้า Home)
-  // =========================================
-  String _dmy(DateTime d) => '${d.day}/${d.month}/${d.year}';
-
-  Future<_FollowupDialogResult?> _showFollowupDialog({
-    required String treeLabel,
-    required DateTime lastPlanDate,
-    required String lastNote,
-  }) async {
-    if (!mounted) return null;
-
-    return showDialog<_FollowupDialogResult>(
-      context: context,
-      barrierDismissible: true,
-      builder: (dialogCtx) {
-        return Dialog(
-          backgroundColor: Colors.transparent,
-          insetPadding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Align(
-            alignment: Alignment.bottomCenter,
-            child: Padding(
-              padding: const EdgeInsets.only(bottom: 24),
-              child: Container(
-                width: double.infinity,
-                constraints: const BoxConstraints(maxWidth: 560),
-                padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(26),
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    // title + close
-                    Row(
-                      children: [
-                        const Expanded(
-                          child: Text(
-                            'ติดตามผลการรักษา',
-                            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
-                          ),
-                        ),
-                        InkWell(
-                          onTap: () => Navigator.pop(dialogCtx),
-                          borderRadius: BorderRadius.circular(24),
-                          child: const Padding(
-                            padding: EdgeInsets.all(6),
-                            child: Icon(Icons.close, size: 22),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-
-                    // info card
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFF7F7F7),
-                        borderRadius: BorderRadius.circular(18),
-                        border: Border.all(color: const Color(0xFFE6E6E6)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            treeLabel,
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          Text(
-                            'แผนสิ้นสุดวันที่: ${_dmy(lastPlanDate)}',
-                            style: const TextStyle(
-                              fontSize: 15,
-                              color: Colors.black87,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'ผ่านไป $_kFollowupDaysAfterPlan วันแล้ว',
-                            style: const TextStyle(fontSize: 14, color: Colors.black54),
-                          ),
-                          if (lastNote.trim().isNotEmpty) ...[
-                            const SizedBox(height: 8),
-                            Text(
-                              lastNote.trim(),
-                              style: const TextStyle(fontSize: 13, color: Colors.black54),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-
-                    const SizedBox(height: 14),
-                    const Text(
-                      'ยาที่ใช้รักษาทำให้โรคหายหรือยัง?',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
-                    ),
-                    const SizedBox(height: 14),
-
-                    Row(
-                      children: [
-                        Expanded(
-                          child: ElevatedButton(
-                            onPressed: () {
-                              Navigator.pop(
-                                dialogCtx,
-                                const _FollowupDialogResult.cured(),
-                              );
-                            },
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: kPrimaryGreen,
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(26),
-                              ),
-                            ),
-                            child: const Text(
-                              'หายแล้ว',
-                              style: TextStyle(fontWeight: FontWeight.w800),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: ElevatedButton(
-                            onPressed: () async {
-                              // ✅ เลือกวันด้วย "ปฏิทินของไฟล์ select_start_spray_date_page.dart"
-                              final picked = await Navigator.push<DateTime>(
-                                dialogCtx,
-                                MaterialPageRoute(
-                                  builder: (_) => SelectStartSprayDatePage(
-                                    initialDate: DateTime.now(),
-                                    minDate: DateTime.now(),
-                                  ),
-                                ),
-                              );
-
-                              if (picked == null) return; // ผู้ใช้กดย้อนกลับ/ยกเลิก
-
-                              final pickedOnly = _dateOnly(picked);
-                              if (!mounted) return;
-
-                              Navigator.pop(
-                                dialogCtx,
-                                _FollowupDialogResult.notCured(pickedOnly),
-                              );
-                            },
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFFB71C1C),
-                              foregroundColor: Colors.white,
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              shape: RoundedRectangleBorder(
-                                borderRadius: BorderRadius.circular(26),
-                              ),
-                            ),
-                            child: const Text(
-                              'ยังไม่หาย',
-                              style: TextStyle(fontWeight: FontWeight.w800),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Future<void> _showCongratsDialog() async {
-    if (!mounted) return;
-
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: true,
-      builder: (dialogCtx) {
-        Widget dot({double size = 10, double opacity = 1}) => Container(
-              width: size,
-              height: size,
-              decoration: BoxDecoration(
-                color: kPrimaryGreen.withOpacity(opacity),
-                shape: BoxShape.circle,
-              ),
-            );
-
-        return Dialog(
-          backgroundColor: Colors.transparent,
-          insetPadding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Align(
-            alignment: Alignment.bottomCenter,
-            child: Padding(
-              padding: const EdgeInsets.only(bottom: 24),
-              child: Container(
-                width: double.infinity,
-                constraints: const BoxConstraints(maxWidth: 560),
-                padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(26),
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    SizedBox(
-                      height: 120,
-                      child: Stack(
-                        children: [
-                          Positioned(top: 8, left: 24, child: dot(size: 10)),
-                          Positioned(top: 22, left: 88, child: dot(size: 8, opacity: .25)),
-                          Positioned(top: 6, left: 160, child: dot(size: 10)),
-                          Positioned(top: 26, left: 210, child: dot(size: 8)),
-                          Positioned(top: 14, right: 120, child: dot(size: 8, opacity: .25)),
-                          Positioned(top: 10, right: 56, child: dot(size: 10)),
-                          Positioned(top: 26, right: 24, child: dot(size: 10)),
-                          Center(
-                            child: Icon(
-                              Icons.celebration,
-                              color: kPrimaryGreen,
-                              size: 54,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    const Text(
-                      'ยินดีด้วย 🎉',
-                      style: TextStyle(fontSize: 26, fontWeight: FontWeight.w900),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'โรคหายแล้ว ขอบคุณที่ดูแลสวนส้มของคุณอย่าง\nสม่ำเสมอ',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.grey, fontSize: 14),
-                    ),
-                    const SizedBox(height: 16),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton(
-                        onPressed: () => Navigator.pop(dialogCtx),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: kPrimaryGreen,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(28),
-                          ),
-                        ),
-                        child: const Text(
-                          'ตกลง',
-                          style: TextStyle(fontWeight: FontWeight.w800),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-
-// =========================================
   // ✅ Follow-up: ครบแผน + 5 วัน -> เด้งถาม
   // =========================================
   void _scheduleFollowupCheck() {
@@ -1075,8 +785,7 @@ class _HomePageState extends State<HomePage> {
     final prefs = await SharedPreferences.getInstance();
 
     for (final c in candidates) {
-      final followupDate =
-          _dateOnly(c.lastPlanDate.add(const Duration(days: _kFollowupDaysAfterPlan)));
+      final followupDate = _dateOnly(c.lastPlanDate.add(const Duration(days: _kFollowupDaysAfterPlan)));
       if (today.isBefore(followupDate)) continue;
 
       final answeredKey = 'followup_v1_answered_${c.diagnosisHistoryId}_${c.lastKey}';
@@ -1099,10 +808,16 @@ class _HomePageState extends State<HomePage> {
       try {
         final treeLabel = _treeLabelById(c.treeId);
 
-        final result = await _showFollowupDialog(
-          treeLabel: treeLabel,
-          lastPlanDate: c.lastPlanDate,
-          lastNote: c.lastNote,
+        final result = await Navigator.push<FollowUpResult>(
+          context,
+          MaterialPageRoute(
+            builder: (_) => TreatmentFollowUpPage(
+              treeLabel: treeLabel,
+              planLastDate: c.lastPlanDate,
+              daysAfter: _kFollowupDaysAfterPlan,
+              lastUsedNote: c.lastNote,
+            ),
+          ),
         );
 
         // ถ้าปิด/ยกเลิก -> snooze 1 วัน
@@ -1116,12 +831,18 @@ class _HomePageState extends State<HomePage> {
         await prefs.setBool(answeredKey, true);
         await prefs.setString(
           'followup_v1_result_${c.diagnosisHistoryId}_${c.lastKey}',
-          result.cured ? 'cured' : 'not_cured',
+          result.outcome == FollowUpOutcome.cured ? 'cured' : 'not_cured',
         );
 
-        if (result.cured) {
+        if (result.outcome == FollowUpOutcome.cured) {
+          // ไปหน้าพื้นหลังขาว + จุดพุ + ยินดีด้วย
           if (!mounted) return;
-          await _showCongratsDialog();
+          await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) => const TreatmentSuccessPage(message: 'ยินดีด้วย'),
+            ),
+          );
           return;
         }
 

@@ -488,7 +488,7 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
                         ),
                         onPressed: loading ? null : _goQuestions,
                         child: const Text(
-                          'ตอบคำถาม',
+                          'ตอบคำถามเพื่อรับคำเเนะนำ',
                           style: TextStyle(
                             fontSize: 16, 
                             fontWeight: FontWeight.w800, 

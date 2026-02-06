@@ -425,116 +425,240 @@ class _SharePageState extends State<SharePage> {
   String _defaultTreeName() => 'ต้นที่ $_nextTreeNumber';
 
   // ✅ เพิ่มต้น: ต้องกรอกข้อมูลให้ครบก่อนถึงจะเพิ่มได้ (Dialog แบบบล็อก)
-  Future<void> _openAddTreeDialog() async {
+      Future<void> _openAddTreeDialog() async {
     final nameCtl = TextEditingController(text: _defaultTreeName());
     final descCtl = TextEditingController();
 
-    await showDialog<void>(
-      context: context,
-      barrierColor: Colors.black54,
-      builder: (ctx) {
-        final mq = MediaQuery.of(ctx);
-        // ✅ แก้ไข 1: ไม่ต้องคำนวณ bottom ตรงนี้
-        final maxH = mq.size.height - 48;
+    try {
+      final result = await showDialog<Map<String, String>?>(
+        context: context,
+        barrierColor: Colors.black54,
+        builder: (ctx) {
+          final mq = MediaQuery.of(ctx);
+          final maxH = mq.size.height - 48;
 
-        return Dialog(
-            backgroundColor: Colors.white,
-            // ✅ แก้ไข 2: ใช้ padding คงที่เพื่อให้ Dialog อยู่กลางจอ
-            insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
-            child: ConstrainedBox(
-              constraints: BoxConstraints(maxHeight: maxH < 220 ? 220.0 : maxH),
-              child: Padding(
-              padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
-              child: SingleChildScrollView(
-                keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'รายละเอียดต้นส้ม',
-                      style: TextStyle(fontSize: 21.5, fontWeight: FontWeight.w800, color: kTextBrown),
-                    ),
-                    const SizedBox(height: 14),
+          bool triedSubmit = false;
 
-                    _fieldCard(
-                      label: 'ชื่อต้น / หมายเลขต้น',
-                      controller: nameCtl,
-                      hintText: 'เช่น ต้นที่ 1',
-                    ),
-                    const SizedBox(height: 12),
-                    _fieldCard(
-                      label: 'รายละเอียด',
-                      controller: descCtl,
-                      maxLines: 2,
-                      hintText: 'เช่น ต้นที่ 1 นับจากริมรั้ว',
-                    ),
+          return StatefulBuilder(
+            builder: (ctx, setSB) {
+              final name = nameCtl.text.trim();
+              final desc = descCtl.text.trim();
+              final isValid = name.isNotEmpty && desc.isNotEmpty;
 
-                    const SizedBox(height: 18),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: SizedBox(
-                            height: 52,
-                            child: ElevatedButton(
-                              onPressed: () => Navigator.pop(ctx),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: const Color(0xFFB71C1C),
-                                foregroundColor: Colors.white,
-                                elevation: 0,
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
-                              ),
-                              child: const Text(
-                                'ยกเลิก',
-                                style: TextStyle(fontSize: 16.0, fontWeight: FontWeight.w700),
-                              ),
+              // ✅ ใช้ field ภายใน dialog เอง เพื่อ rebuild ตอนพิมพ์ (ไม่ต้อง addListener / AnimatedBuilder)
+              Widget dialogFieldCard({
+                required String label,
+                required TextEditingController controller,
+                int maxLines = 1,
+                String? hintText,
+              }) {
+                return Container(
+                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                  decoration: BoxDecoration(
+                    color: kCardBg,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        label,
+                        style: const TextStyle(
+                          color: kTextBrown,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13.5,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      TextField(
+                        controller: controller,
+                        maxLines: maxLines,
+                        scrollPadding: const EdgeInsets.only(bottom: 90),
+                        onChanged: (_) {
+                          if (triedSubmit) setSB(() {});
+                        },
+                        decoration: InputDecoration(
+                          isDense: true,
+                          hintText: hintText,
+                          hintStyle: TextStyle(
+                            color: kTextBrown.withOpacity(0.45),
+                            fontWeight: FontWeight.w400,
+                          ),
+                          border: InputBorder.none,
+                        ),
+                        style: const TextStyle(
+                          color: Colors.black87,
+                          fontSize: 14.5,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }
+
+              return Dialog(
+                backgroundColor: Colors.white,
+                insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(maxHeight: maxH < 220 ? 220.0 : maxH),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
+                    child: SingleChildScrollView(
+                      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'รายละเอียดต้นส้ม',
+                            style: TextStyle(
+                              fontSize: 21.5,
+                              fontWeight: FontWeight.w800,
+                              color: kTextBrown,
                             ),
                           ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: SizedBox(
-                            height: 52,
-                            child: ElevatedButton(
-                              onPressed: () async {
-                                final name = nameCtl.text.trim();
-                                final desc = descCtl.text.trim();
-                                if (name.isEmpty || desc.isEmpty) {
-                                  _snack('กรุณากรอกข้อมูลให้ครบ');
-                                  return;
-                                }
+                          const SizedBox(height: 14),
 
-                                Navigator.pop(ctx);
-                                await _createTree(name: name, description: desc);
-                                if (!mounted) return;
-                                setState(() {
-                                  _nextTreeNumber = _guessNextTreeNumber(_records);
-                                });
-                              },
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: kPrimaryGreen,
-                                foregroundColor: Colors.white,
-                                elevation: 0,
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+                          // ✅ แถบเตือน: แสดงเฉพาะตอนผู้ใช้พยายามกดยืนยัน แต่กรอกไม่ครบ
+                          if (triedSubmit && !isValid) ...[
+                            Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFFFEBEE),
+                                border: Border.all(color: const Color(0xFFD32F2F), width: 1),
+                                borderRadius: BorderRadius.circular(16),
                               ),
-                              child: const Text(
-                                'ยืนยันการเพิ่มต้น',
-                                style: TextStyle(fontSize: 16.0, fontWeight: FontWeight.w800),
-                                textAlign: TextAlign.center,
+                              child: Row(
+                                children: const [
+                                  Icon(
+                                    Icons.warning_amber_rounded,
+                                    color: Color(0xFFD32F2F),
+                                    size: 20,
+                                  ),
+                                  SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      'กรุณากรอกข้อมูลให้ครบทุกช่องก่อนยืนยันการเพิ่มต้น',
+                                      style: TextStyle(
+                                        color: Color(0xFFD32F2F),
+                                        fontSize: 13.5,
+                                        fontWeight: FontWeight.w800,
+                                        height: 1.25,
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
+                            const SizedBox(height: 12),
+                          ],
+
+                          dialogFieldCard(
+                            label: 'ชื่อต้น / หมายเลขต้น',
+                            controller: nameCtl,
+                            hintText: 'เช่น ต้นที่ 1',
                           ),
-                        ),
-                      ],
+                          const SizedBox(height: 12),
+                          dialogFieldCard(
+                            label: 'รายละเอียด',
+                            controller: descCtl,
+                            maxLines: 2,
+                            hintText: 'เช่น ต้นที่ 1 นับจากริมรั้ว',
+                          ),
+
+                          const SizedBox(height: 18),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: SizedBox(
+                                  height: 52,
+                                  child: ElevatedButton(
+                                    onPressed: () => Navigator.pop(ctx, null),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFFB71C1C),
+                                      foregroundColor: Colors.white,
+                                      elevation: 0,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(22),
+                                      ),
+                                    ),
+                                    child: const Text(
+                                      'ยกเลิก',
+                                      style: TextStyle(
+                                        fontSize: 16.0,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: SizedBox(
+                                  height: 52,
+                                  child: ElevatedButton(
+                                    // ✅ กดยืนยันได้ แต่ถ้ากรอกไม่ครบจะไม่ปิด dialog และจะแสดงแถบเตือน
+                                    onPressed: () {
+                                      final name = nameCtl.text.trim();
+                                      final desc = descCtl.text.trim();
+
+                                      if (name.isEmpty || desc.isEmpty) {
+                                        setSB(() => triedSubmit = true);
+                                        return;
+                                      }
+
+                                      // ✅ ส่งค่ากลับออกไป แล้วค่อยสร้างต้นหลังจาก dialog ปิดสนิท (กัน assert)
+                                      Navigator.pop(ctx, {'name': name, 'desc': desc});
+                                    },
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: kPrimaryGreen,
+                                      foregroundColor: Colors.white,
+                                      elevation: 0,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(22),
+                                      ),
+                                    ),
+                                    child: const Text(
+                                      'ยืนยันการเพิ่มต้น',
+                                      style: TextStyle(
+                                        fontSize: 16.0,
+                                        fontWeight: FontWeight.w800,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
                     ),
-                  ],
+                  ),
                 ),
-              ),
-            ),
-          ),
-        );
-      },
-    );
+              );
+            },
+          );
+        },
+      );
+
+      // ปิด dialog แล้วค่อยทำงานต่อ
+      if (result == null) return;
+
+      await _createTree(name: result['name'] ?? '', description: result['desc'] ?? '');
+      if (!mounted) return;
+      setState(() {
+        _nextTreeNumber = _guessNextTreeNumber(_records);
+      });
+    } finally {
+      // ✅ กัน assert ตอนปิด dialog (route ยัง animate ออกอยู่) → เลื่อนการ dispose ออกไปนิดเดียว
+      Future.delayed(const Duration(milliseconds: 350), () {
+        nameCtl.dispose();
+        descCtl.dispose();
+      });
+    }
   }
 
   Future<void> _openHistory(CitrusTreeRecord r) async {

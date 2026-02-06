@@ -18,7 +18,7 @@ const kPrimaryGreen = Color(0xFF005E33);
 // ====== ตั้งค่า API โมเดล ======
 const String kModelApiBase = String.fromEnvironment(
   'MODEL_API_BASE',
-  defaultValue: 'https://north-cambridge-partners-gifts.trycloudflare.com',
+  defaultValue: 'https://creations-members-beliefs-concerns.trycloudflare.com',
 );
 const String kModelPredictPath = '/predict';
 const bool kUseRealModelApi = true;
