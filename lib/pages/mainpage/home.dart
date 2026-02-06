@@ -114,12 +114,17 @@ class _FollowupCandidate {
   final DateTime lastPlanDate;
   final String lastNote;
 
+  /// จำนวนวันหลังแผนสิ้นสุดก่อนถามติดตามผล (fallback = 5)
+  final int evaluationAfterDays;
+
   _FollowupCandidate({
     required this.diagnosisHistoryId,
     required this.treeId,
     required this.lastPlanDate,
     required this.lastNote,
-  });
+    int? evaluationAfterDays,
+  }) : evaluationAfterDays =
+            (evaluationAfterDays != null && evaluationAfterDays > 0) ? evaluationAfterDays : 5;
 
   String get lastKey => _ymd(lastPlanDate);
 }
@@ -527,7 +532,6 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _toggleDone(_ReminderRow r, bool done) async {
     if (_isFutureDay(r.reminderDate)) return;
-    if (!done) return;
 
     final token = await _readToken();
     if (token == null || token.isEmpty) return;
@@ -554,10 +558,35 @@ class _HomePageState extends State<HomePage> {
           });
           _rebuildDueIndexFromReminders();
 
-          // ✅ เผื่อกรณีทำครบพอดี แล้วเข้าเงื่อนไขติดตามผล (ในอนาคต)
+          // ✅ ถ้าผู้ใช้ “ยกเลิกทำแล้ว” -> ล้างสถานะ follow-up ที่เคยตอบไว้
+          // เพื่อให้ถ้าติ๊ก “ทำแล้ว” ใหม่ สามารถเด้งถามติดตามผลอีกครั้ง (ใช้สำหรับทดสอบ/เผลอกด)
+          if (!done) {
+            final dhId = r.diagnosisHistoryId;
+            if (dhId != null && dhId > 0) {
+              await _clearFollowupAnsweredForDh(dhId);
+            }
+          }
+
+          // ✅ เผื่อกรณีทำครบพอดี แล้วเข้าเงื่อนไขติดตามผล
           _scheduleFollowupCheck();
         }
       }
+    } catch (_) {}
+  }
+
+  Future<void> _clearFollowupAnsweredForDh(int diagnosisHistoryId) async {
+    try {
+      final items = _reminders.where((x) => x.diagnosisHistoryId == diagnosisHistoryId).toList();
+      if (items.isEmpty) return;
+
+      items.sort((a, b) => a.reminderDate.compareTo(b.reminderDate));
+      final lastKey = _ymd(items.last.reminderDate);
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('followup_v1_answered_${diagnosisHistoryId}_$lastKey');
+      await prefs.remove('followup_v1_snooze_${diagnosisHistoryId}_$lastKey');
+      await prefs.remove('followup_v1_result_${diagnosisHistoryId}_$lastKey');
+      await prefs.remove('followup_v1_next_start_${diagnosisHistoryId}_$lastKey');
     } catch (_) {}
   }
 
@@ -663,11 +692,10 @@ class _HomePageState extends State<HomePage> {
                           Switch(
                             value: doneNow,
                             activeColor: kPrimaryGreen,
-                            onChanged: (isFuture || doneNow)
+                            onChanged: isFuture
                                 ? null
                                 : (v) async {
-                                    if (!v) return;
-                                    await _toggleDone(it, true);
+                                    await _toggleDone(it, v);
                                     if (Navigator.of(dialogCtx, rootNavigator: true).canPop()) {
                                       Navigator.of(dialogCtx, rootNavigator: true).pop();
                                     }
@@ -725,6 +753,411 @@ class _HomePageState extends State<HomePage> {
 
   
 
+
+  // -----------------------------
+  // ✅ Follow-up v1 (ยังไม่หาย) : สร้างแผนรอบถัดไป + พยายามแนะนำสารตัวถัดไป
+  // -----------------------------
+
+  int _toInt(dynamic v) {
+    if (v == null) return 0;
+    if (v is int) return v;
+    if (v is double) return v.toInt();
+    return int.tryParse(v.toString()) ?? 0;
+  }
+
+  String _suggestNextChemicalLabel(String lastNote) {
+    // lastNote มักเป็น "พ่นยา: XXXX"
+    String s = lastNote.trim();
+    final idx = s.indexOf(':');
+    if (idx >= 0 && idx + 1 < s.length) {
+      s = s.substring(idx + 1).trim();
+    }
+
+    // ตัวอย่าง-1A -> ตัวอย่าง-1B
+    final mLetter = RegExp(r'^(.*?)([A-Z])$').firstMatch(s);
+    if (mLetter != null) {
+      final base = mLetter.group(1) ?? '';
+      final ch = mLetter.group(2) ?? 'A';
+      final code = ch.codeUnitAt(0);
+      if (code >= 65 && code < 90) {
+        final next = String.fromCharCode(code + 1);
+        return (base + next).trim();
+      }
+    }
+
+    // ...9 -> ...10
+    final mNum = RegExp(r'^(.*?)(\d+)$').firstMatch(s);
+    if (mNum != null) {
+      final base = mNum.group(1) ?? '';
+      final num = int.tryParse(mNum.group(2) ?? '') ?? 0;
+      return (base + (num + 1).toString()).trim();
+    }
+
+    return "$s (ตัวถัดไป)".trim();
+  }
+
+  void _showSnackFloating(String message, {bool isError = false}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        behavior: SnackBarBehavior.floating,
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 200), // ✅ ดันขึ้นให้พ้นแถบเมนู
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Future<List<dynamic>?> _apiGetList(String path, {String? token}) async {
+    try {
+      final url = _joinApi(_apiBaseUrl, path);
+      final res = await http.get(Uri.parse(url), headers: _headers(token));
+      if (res.statusCode != 200) return null;
+      final data = jsonDecode(res.body);
+      if (data is List) return data;
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<Map<String, dynamic>?> _apiPostJson(String path, Map<String, dynamic> body,
+      {String? token}) async {
+    try {
+      final url = _joinApi(_apiBaseUrl, path);
+      final res = await http.post(
+        Uri.parse(url),
+        headers: _headersJson(token),
+        body: jsonEncode(body),
+      );
+      if (res.statusCode != 200) return null;
+      final data = jsonDecode(res.body);
+      if (data is Map<String, dynamic>) return data;
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<Map<String, dynamic>?> _fetchDiagnosisHistoryMini(int diagnosisHistoryId) async {
+    try {
+      final token = await _readToken();
+      final url = _joinApi(
+        _apiBaseUrl,
+        'diagnosis_history/read_diagnosis_history.php?id=$diagnosisHistoryId',
+      );
+      final res = await http.get(Uri.parse(url), headers: _headers(token));
+      if (res.statusCode != 200) return null;
+      final data = jsonDecode(res.body);
+      if (data is Map<String, dynamic>) return data;
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<Map<String, dynamic>?> _fetchLatestEpisodeByDiagnosisHistory(int diagnosisHistoryId) async {
+    final token = await _readToken();
+    final list = await _apiGetList(
+      'treatment_episodes/read_treatment_episodes.php?diagnosis_history_id=$diagnosisHistoryId',
+      token: token,
+    );
+    if (list == null || list.isEmpty) return null;
+    final first = list.first;
+    if (first is Map<String, dynamic>) return first;
+    if (first is Map) return Map<String, dynamic>.from(first);
+    return null;
+  }
+
+  Future<Map<String, dynamic>?> _selectNextChemicalAndGroup({
+    required int riskLevelId,
+    int? currentMoaGroupId,
+    int? currentChemicalId,
+  }) async {
+    final token = await _readToken();
+
+    // 1) หา order ของ MOA groups ตาม risk level
+    final plan = await _apiGetList(
+      'risk_level_moa_plan/read_risk_level_moa_plan.php?risk_level_id=$riskLevelId',
+      token: token,
+    );
+    if (plan == null || plan.isEmpty) return null;
+
+    List<Map<String, dynamic>> planRows = plan
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+
+    int orderKey(Map<String, dynamic> m) =>
+        _toInt(m['priority'] ?? m['order_index'] ?? m['order'] ?? 0);
+
+    planRows.sort((a, b) => orderKey(a).compareTo(orderKey(b)));
+
+    int moaIdOf(Map<String, dynamic> m) =>
+        _toInt(m['moa_group_id'] ?? m['moaGroupId'] ?? m['id'] ?? 0);
+
+    int curIdx = 0;
+    if (currentMoaGroupId != null && currentMoaGroupId != 0) {
+      final i = planRows.indexWhere((r) => moaIdOf(r) == currentMoaGroupId);
+      if (i >= 0) curIdx = i;
+    }
+
+    // helper: โหลด chemicals ของ moa group
+    Future<List<Map<String, dynamic>>?> loadChem(int moaGroupId) async {
+      final rows = await _apiGetList(
+        'risk_level_moa_chemicals/read_risk_level_moa_chemicals.php?risk_level_id=$riskLevelId&moa_group_id=$moaGroupId',
+        token: token,
+      );
+      if (rows == null || rows.isEmpty) return null;
+      final list = rows
+          .whereType<Map>()
+          .map((e) => Map<String, dynamic>.from(e))
+          .toList();
+      int ck(Map<String, dynamic> m) =>
+          _toInt(m['priority'] ?? m['order_index'] ?? m['order'] ?? 0);
+      list.sort((a, b) => ck(a).compareTo(ck(b)));
+      return list;
+    }
+
+    // 2) พยายามเลือกสารตัวถัดไปใน group เดิมก่อน
+    int selectedMoaId = moaIdOf(planRows[curIdx]);
+    final chemsInCur = await loadChem(selectedMoaId);
+    if (chemsInCur != null && chemsInCur.isNotEmpty) {
+      int chemIdOf(Map<String, dynamic> m) =>
+          _toInt(m['chemical_id'] ?? m['chemicalId'] ?? m['id'] ?? 0);
+
+      int curChemIdx = -1;
+      if (currentChemicalId != null && currentChemicalId != 0) {
+        curChemIdx = chemsInCur.indexWhere((c) => chemIdOf(c) == currentChemicalId);
+      }
+
+      if (curChemIdx >= 0 && curChemIdx + 1 < chemsInCur.length) {
+        final next = chemsInCur[curChemIdx + 1];
+        return {
+          'moa_group_id': selectedMoaId,
+          'chemical_id': chemIdOf(next),
+          'chemical_name': next['chemical_name'] ?? next['name'] ?? '',
+          'moved_group': false,
+        };
+      }
+
+      // ถ้าไม่มีตัวถัดไปใน group เดิม -> ไป group ถัดไป
+      for (int step = 1; step <= planRows.length; step++) {
+        final idx = (curIdx + step) % planRows.length;
+        final moaId = moaIdOf(planRows[idx]);
+        final chems = await loadChem(moaId);
+        if (chems == null || chems.isEmpty) continue;
+        final first = chems.first;
+        return {
+          'moa_group_id': moaId,
+          'chemical_id': chemIdOf(first),
+          'chemical_name': first['chemical_name'] ?? first['name'] ?? '',
+          'moved_group': true,
+        };
+      }
+
+      // fallback: เอาตัวแรกของ group เดิม
+      final first = chemsInCur.first;
+      return {
+        'moa_group_id': selectedMoaId,
+        'chemical_id': chemIdOf(first),
+        'chemical_name': first['chemical_name'] ?? first['name'] ?? '',
+        'moved_group': false,
+      };
+    }
+
+    return null;
+  }
+
+
+  /// ✅ แสดงชื่อ “สารที่แนะนำครั้งถัดไป” (preview) ก่อนให้ผู้ใช้เลือกวันเริ่มรักษาใหม่
+  /// - พยายามคำนวณจาก risk_level_moa_plan + risk_level_moa_chemicals + episode ล่าสุด
+  /// - ถ้าดึงไม่สำเร็จ จะ fallback เป็นการเดาชื่อถัดไปจาก note เดิม
+  Future<String> _previewNextChemicalLabelForFollowup({
+    required int diagnosisHistoryId,
+    required String lastNote,
+  }) async {
+    try {
+      int riskLevelId = 0;
+      int currentMoaGroupId = 0;
+      int currentChemicalId = 0;
+
+      final dh = await _fetchDiagnosisHistoryMini(diagnosisHistoryId);
+      if (dh != null) {
+        riskLevelId = _toInt(dh['risk_level_id'] ?? dh['riskLevelId'] ?? dh['disease_risk_level_id']);
+      }
+
+      final ep = await _fetchLatestEpisodeByDiagnosisHistory(diagnosisHistoryId);
+      if (ep != null) {
+        currentMoaGroupId = _toInt(ep['current_moa_group_id']);
+        currentChemicalId = _toInt(ep['current_chemical_id']);
+        final rlFromEp = _toInt(ep['risk_level_id']);
+        if (riskLevelId == 0 && rlFromEp != 0) riskLevelId = rlFromEp;
+      }
+
+      Map<String, dynamic>? nextPick;
+      if (riskLevelId != 0) {
+        nextPick = await _selectNextChemicalAndGroup(
+          riskLevelId: riskLevelId,
+          currentMoaGroupId: currentMoaGroupId,
+          currentChemicalId: currentChemicalId,
+        );
+      }
+
+      final nameFromPick = (nextPick?['chemical_name'] ?? '').toString().trim();
+      if (nameFromPick.isNotEmpty) return nameFromPick;
+
+      return _suggestNextChemicalLabel(lastNote);
+    } catch (_) {
+      return _suggestNextChemicalLabel(lastNote);
+    }
+  }
+
+  Future<bool> _createNextPlanAfterNotImproved(_FollowupCandidate c, DateTime nextStartDate) async {
+    try {
+      final token = await _readToken();
+      if (token == null || token.isEmpty) return false;
+
+      // ✅ กันซ้ำแบบง่าย: ถ้ามี reminder ในอนาคตของ diagnosis นี้อยู่แล้ว -> ไม่สร้างซ้ำ
+      final hasFuture = _reminders.any((r) =>
+          r.diagnosisHistoryId == c.diagnosisHistoryId &&
+          _dateOnly(r.reminderDate).isAfter(_dateOnly(DateTime.now())));
+      if (hasFuture) return true;
+
+      // 1) ใช้ pattern วันที่จากแผนเดิม (offsets จากวันแรก)
+      final dates = _reminders
+          .where((r) => r.diagnosisHistoryId == c.diagnosisHistoryId)
+          .map((r) => _dateOnly(r.reminderDate))
+          .toSet()
+          .toList()
+        ..sort();
+      final base = dates.isEmpty ? _dateOnly(nextStartDate) : dates.first;
+      final offsets = (dates.isEmpty ? <int>[0] : dates.map((d) => d.difference(base).inDays).toList())
+        ..sort();
+      final uniqueOffsets = offsets.toSet().toList()..sort();
+
+      // 2) ดึง riskLevel + episode เพื่อพยายามเลือก "สารตัวถัดไป"
+      int riskLevelId = 0;
+      int currentMoaGroupId = 0;
+      int currentChemicalId = 0;
+      int episodeId = 0;
+      int groupAttemptNo = 1;
+      int productAttemptNo = 1;
+
+      final dh = await _fetchDiagnosisHistoryMini(c.diagnosisHistoryId);
+      if (dh != null) {
+        riskLevelId = _toInt(dh['risk_level_id'] ?? dh['riskLevelId'] ?? dh['disease_risk_level_id']);
+      }
+
+      final ep = await _fetchLatestEpisodeByDiagnosisHistory(c.diagnosisHistoryId);
+      if (ep != null) {
+        episodeId = _toInt(ep['episode_id'] ?? ep['id']);
+        currentMoaGroupId = _toInt(ep['current_moa_group_id']);
+        currentChemicalId = _toInt(ep['current_chemical_id']);
+        groupAttemptNo = _toInt(ep['group_attempt_no']) == 0 ? 1 : _toInt(ep['group_attempt_no']);
+        productAttemptNo = _toInt(ep['product_attempt_no']) == 0 ? 1 : _toInt(ep['product_attempt_no']);
+        final rlFromEp = _toInt(ep['risk_level_id']);
+        if (riskLevelId == 0 && rlFromEp != 0) riskLevelId = rlFromEp;
+      }
+
+      Map<String, dynamic>? nextPick;
+      if (riskLevelId != 0) {
+        nextPick = await _selectNextChemicalAndGroup(
+          riskLevelId: riskLevelId,
+          currentMoaGroupId: currentMoaGroupId,
+          currentChemicalId: currentChemicalId,
+        );
+      }
+
+      final nextMoaGroupId = _toInt(nextPick?['moa_group_id']);
+      final nextChemicalId = _toInt(nextPick?['chemical_id']);
+      final movedGroup = (nextPick?['moved_group'] == true);
+
+      // label สำหรับ note (ให้เห็นชัดแม้ join ชื่อสารไม่ได้)
+      String label;
+      final nameFromPick = (nextPick?['chemical_name'] ?? '').toString().trim();
+      if (nameFromPick.isNotEmpty) {
+        label = nameFromPick;
+      } else {
+        label = _suggestNextChemicalLabel(c.lastNote);
+      }
+
+      // 3) อัปเดต episode ล่าสุด (ถ้ามี) ให้ชี้ไปสารตัวถัดไป + start_spray_date ใหม่
+      if (episodeId != 0) {
+        int newGroupAttemptNo = groupAttemptNo;
+        int newProductAttemptNo = productAttemptNo;
+
+        if (nextChemicalId != 0) {
+          if (movedGroup) {
+            newGroupAttemptNo = groupAttemptNo + 1;
+            newProductAttemptNo = 1;
+          } else {
+            newProductAttemptNo = productAttemptNo + 1;
+          }
+        }
+
+        await _apiPostJson(
+          'treatment_episodes/update_treatment_episodes.php',
+          {
+            'episode_id': episodeId,
+            'start_spray_date': _ymd(_dateOnly(nextStartDate)),
+            'current_moa_group_id': nextMoaGroupId == 0 ? null : nextMoaGroupId,
+            'current_chemical_id': nextChemicalId == 0 ? null : nextChemicalId,
+            'group_attempt_no': newGroupAttemptNo,
+            'product_attempt_no': newProductAttemptNo,
+            'spray_round_no': 0,
+            'last_evaluation': 'not_improved',
+            'status': 'active',
+          },
+          token: token,
+        );
+      }
+
+      // 4) สร้าง reminders รอบใหม่
+      final treeIdInt = int.tryParse(c.treeId) ?? 0;
+      if (treeIdInt == 0) return false;
+
+      int round = 1;
+      for (final off in uniqueOffsets) {
+        final d = _dateOnly(nextStartDate.add(Duration(days: off)));
+        final ymd = _ymd(d);
+
+        final body = <String, dynamic>{
+          'tree_id': treeIdInt,
+          'reminder_date': ymd,
+          'note': 'พ่นยา: $label',
+          'is_done': 0,
+          'diagnosis_history_id': c.diagnosisHistoryId,
+          'start_spray_date': _ymd(_dateOnly(nextStartDate)),
+          'spray_round_no': round,
+          'spray_total_rounds': uniqueOffsets.length,
+        };
+
+        if (nextMoaGroupId != 0) body['moa_group_id'] = nextMoaGroupId;
+        if (nextChemicalId != 0) body['chemical_id'] = nextChemicalId;
+
+        final resp = await _apiPostJson('care_reminders/create_care_reminders.php', body, token: token);
+        if (resp == null || resp['success'] != true) {
+          // ถ้า fail บางรายการ ให้หยุดทันทีเพื่อไม่ให้ข้อมูลเพี้ยน
+          return false;
+        }
+        round++;
+      }
+
+      // ✅ รีโหลดเดือนของวันเริ่มใหม่ เพื่อให้เห็นแผนทันที
+      if (!mounted) return true;
+      setState(() {
+        _focusedDay = _dateOnly(nextStartDate);
+        _selectedDate = _dateOnly(nextStartDate);
+      });
+      await _loadRemindersForMonth(_focusedDay);
+
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   // =========================================
   // ✅ Dialog ติดตามผล (ซ้อนบนหน้า Home)
   // =========================================
@@ -733,7 +1166,9 @@ class _HomePageState extends State<HomePage> {
   Future<_FollowupDialogResult?> _showFollowupDialog({
     required String treeLabel,
     required DateTime lastPlanDate,
+    required int evaluationAfterDays,
     required String lastNote,
+    required int diagnosisHistoryId,
   }) async {
     if (!mounted) return null;
 
@@ -809,7 +1244,7 @@ class _HomePageState extends State<HomePage> {
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            'ผ่านไป $_kFollowupDaysAfterPlan วันแล้ว',
+                            'ผ่านไป $evaluationAfterDays วันแล้ว',
                             style: const TextStyle(fontSize: 14, color: Colors.black54),
                           ),
                           if (lastNote.trim().isNotEmpty) ...[
@@ -859,6 +1294,122 @@ class _HomePageState extends State<HomePage> {
                         Expanded(
                           child: ElevatedButton(
                             onPressed: () async {
+                                                            // ✅ แสดง “สารตัวถัดไป” ให้ผู้ใช้เห็นก่อนเลือกวันเริ่มรักษา
+                              final nextLabel = await _previewNextChemicalLabelForFollowup(
+                                diagnosisHistoryId: diagnosisHistoryId,
+                                lastNote: lastNote,
+                              );
+
+                              final goPick = await showDialog<bool>(
+                                context: dialogCtx,
+                                useRootNavigator: true,
+                                barrierDismissible: true,
+                                builder: (ctx2) {
+                                  return Dialog(
+                                    backgroundColor: Colors.transparent,
+                                    insetPadding: const EdgeInsets.symmetric(horizontal: 16),
+                                    child: Align(
+                                      alignment: Alignment.bottomCenter,
+                                      child: Padding(
+                                        padding: const EdgeInsets.only(bottom: 24),
+                                        child: Container(
+                                          width: double.infinity,
+                                          constraints: const BoxConstraints(maxWidth: 560),
+                                          padding: const EdgeInsets.fromLTRB(18, 16, 18, 18),
+                                          decoration: BoxDecoration(
+                                            color: Colors.white,
+                                            borderRadius: BorderRadius.circular(22),
+                                            boxShadow: const [
+                                              BoxShadow(
+                                                color: Color(0x33000000),
+                                                blurRadius: 18,
+                                                offset: Offset(0, 10),
+                                              ),
+                                            ],
+                                          ),
+                                          child: Column(
+                                            mainAxisSize: MainAxisSize.min,
+                                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                                            children: [
+                                              Row(
+                                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                                children: [
+                                                  const Text(
+                                                    'สารที่แนะนำครั้งถัดไป',
+                                                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900),
+                                                  ),
+                                                  IconButton(
+                                                    onPressed: () => Navigator.pop(ctx2, false),
+                                                    icon: const Icon(Icons.close),
+                                                  ),
+                                                ],
+                                              ),
+                                              const SizedBox(height: 10),
+                                              Container(
+                                                padding: const EdgeInsets.all(14),
+                                                decoration: BoxDecoration(
+                                                  color: const Color(0xFFF5F5F5),
+                                                  borderRadius: BorderRadius.circular(16),
+                                                  border: Border.all(color: const Color(0xFFE0E0E0)),
+                                                ),
+                                                child: Text(
+                                                  nextLabel,
+                                                  style: const TextStyle(
+                                                    fontSize: 18,
+                                                    fontWeight: FontWeight.w800,
+                                                    color: kPrimaryGreen,
+                                                  ),
+                                                ),
+                                              ),
+                                              const SizedBox(height: 14),
+                                              Row(
+                                                children: [
+                                                  Expanded(
+                                                    child: OutlinedButton(
+                                                      onPressed: () => Navigator.pop(ctx2, false),
+                                                      style: OutlinedButton.styleFrom(
+                                                        padding: const EdgeInsets.symmetric(vertical: 14),
+                                                        shape: RoundedRectangleBorder(
+                                                          borderRadius: BorderRadius.circular(26),
+                                                        ),
+                                                      ),
+                                                      child: const Text(
+                                                        'ยกเลิก',
+                                                        style: TextStyle(fontWeight: FontWeight.w800),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  const SizedBox(width: 12),
+                                                  Expanded(
+                                                    child: ElevatedButton(
+                                                      onPressed: () => Navigator.pop(ctx2, true),
+                                                      style: ElevatedButton.styleFrom(
+                                                        backgroundColor: kPrimaryGreen,
+                                                        foregroundColor: Colors.white,
+                                                        padding: const EdgeInsets.symmetric(vertical: 14),
+                                                        shape: RoundedRectangleBorder(
+                                                          borderRadius: BorderRadius.circular(26),
+                                                        ),
+                                                      ),
+                                                      child: const Text(
+                                                        'เลือกวันที่เริ่มรักษา',
+                                                        style: TextStyle(fontWeight: FontWeight.w800),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              );
+
+                              if (goPick != true) return;
+
                               // ✅ เลือกวันด้วย "ปฏิทินของไฟล์ select_start_spray_date_page.dart"
                               final picked = await Navigator.push<DateTime>(
                                 dialogCtx,
@@ -870,7 +1421,7 @@ class _HomePageState extends State<HomePage> {
                                 ),
                               );
 
-                              if (picked == null) return; // ผู้ใช้กดย้อนกลับ/ยกเลิก
+if (picked == null) return; // ผู้ใช้กดย้อนกลับ/ยกเลิก
 
                               final pickedOnly = _dateOnly(picked);
                               if (!mounted) return;
@@ -1064,6 +1615,52 @@ class _HomePageState extends State<HomePage> {
     return out;
   }
 
+  /// ✅ อ่านค่า evaluation_after_days (จำนวนวันหลังแผนสิ้นสุดก่อนถามติดตามผล) จาก DB
+  /// fallback = 5
+  Future<int> _fetchEvaluationAfterDays(int diagnosisHistoryId) async {
+    const int fallback = 5;
+
+    try {
+      final token = await _readToken();
+      if (token == null) return fallback;
+
+      final uri = Uri.parse(_joinApi(
+        _apiBaseUrl,
+        '/diagnosis_history/read_diagnosis_history.php?diagnosis_history_id=$diagnosisHistoryId',
+      ));
+
+      final res = await http.get(uri, headers: {
+        'Accept': 'application/json',
+        if (token.isNotEmpty) 'Authorization': 'Bearer $token',
+      });
+
+      if (res.statusCode != 200) return fallback;
+
+      final decoded = jsonDecode(res.body);
+      dynamic data = decoded;
+      if (decoded is Map) data = decoded['data'] ?? decoded;
+
+      Map<String, dynamic>? row;
+      if (data is List && data.isNotEmpty && data.first is Map) {
+        row = Map<String, dynamic>.from(data.first as Map);
+      } else if (data is Map) {
+        row = Map<String, dynamic>.from(data);
+      }
+      if (row == null) return fallback;
+
+      final v = _toInt(row['evaluation_after_days']);
+      if (v > 0) return v;
+
+      final d = _toInt(row['days']);
+      if (d > 0) return d;
+
+      return fallback;
+    } catch (_) {
+      return fallback;
+    }
+  }
+
+
   Future<void> _checkAndPromptFollowup() async {
     if (!mounted) return;
     if (_followupPrompting) return;
@@ -1075,8 +1672,8 @@ class _HomePageState extends State<HomePage> {
     final prefs = await SharedPreferences.getInstance();
 
     for (final c in candidates) {
-      final followupDate =
-          _dateOnly(c.lastPlanDate.add(const Duration(days: _kFollowupDaysAfterPlan)));
+      final evalDays = await _fetchEvaluationAfterDays(c.diagnosisHistoryId);
+      final followupDate = _dateOnly(c.lastPlanDate.add(Duration(days: evalDays)));
       if (today.isBefore(followupDate)) continue;
 
       final answeredKey = 'followup_v1_answered_${c.diagnosisHistoryId}_${c.lastKey}';
@@ -1102,7 +1699,9 @@ class _HomePageState extends State<HomePage> {
         final result = await _showFollowupDialog(
           treeLabel: treeLabel,
           lastPlanDate: c.lastPlanDate,
+          evaluationAfterDays: evalDays,
           lastNote: c.lastNote,
+          diagnosisHistoryId: c.diagnosisHistoryId,
         );
 
         // ถ้าปิด/ยกเลิก -> snooze 1 วัน
@@ -1143,13 +1742,14 @@ class _HomePageState extends State<HomePage> {
           // trigger refresh ให้หน้าอื่น ๆ
           await prefs.setInt('app_refresh_ts_v1', DateTime.now().millisecondsSinceEpoch);
 
+          final ok = await _createNextPlanAfterNotImproved(c, result.nextStartDate!);
+
           if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text('บันทึกวันเริ่มรักษาใหม่แล้ว: $ymd'),
-                duration: const Duration(seconds: 2),
-              ),
-            );
+            if (ok) {
+              _showSnackFloating('สร้างแผนรอบถัดไปแล้ว: $ymd');
+            } else {
+              _showSnackFloating('', isError: true);
+            }
           }
         }
 

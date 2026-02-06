@@ -22,6 +22,30 @@ String _joinApi(String base, String path) {
   return '$b$p';
 }
 
+// แปลง path รูปจาก DB ให้เป็น URL ที่เปิดได้จริง (รองรับทั้ง full URL และ path แบบ relative)
+String _resolvePublicUrl(String raw) {
+  final p = raw.toString().trim();
+  if (p.isEmpty) return '';
+  if (p.startsWith('http://') || p.startsWith('https://')) return p;
+
+  try {
+    final apiUri = Uri.parse(API_BASE);
+    final origin = '${apiUri.scheme}://${apiUri.authority}';
+
+    // ถ้าเป็น path แบบ /crud/uploads/... ให้ต่อกับ origin ได้เลย
+    if (p.startsWith('/')) return origin + p;
+
+    // ถ้าเป็น crud/uploads/... ให้ต่อกับ origin เช่นกัน
+    if (p.startsWith('crud/')) return '$origin/$p';
+
+    // โดยทั่วไปจะเป็น uploads/... => ให้ต่อกับ base public (/crud)
+    final publicBase = API_BASE.replaceAll(RegExp(r'/api/?$'), '');
+    return _joinApi(publicBase, '/$p');
+  } catch (_) {
+    return p;
+  }
+}
+
 String _s(dynamic v) => (v ?? '').toString().trim();
 
 class DiseaseDiagnosisPage extends StatefulWidget {
@@ -63,6 +87,9 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
   String description = '';
   String cause = '';
   String symptoms = '';
+
+  // รูปตัวอย่างของโรค (ดึงจาก DB) ใช้เป็นค่า fallback ถ้าไม่ได้ส่ง compareImageUrl มา
+  String _diseaseImageUrl = '';
 
   bool _openDesc = false;
   bool _openCause = false;
@@ -146,12 +173,42 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
       data ??= await _fallbackReadAllAndFind(token);
       if (data == null) throw Exception('ไม่พบข้อมูลโรค');
 
+      // ถ้า readone ไม่ได้ส่งรูปมา แต่ read_diseases มีรูป (เช่น join ตาราง disease_images)
+      // ให้ดึงจาก read_diseases มาเติมเพิ่ม เพื่อให้หน้าวินิจฉัยมีรูปตัวอย่างของโรคเสมอ
+      final imgFromReadOne = _pick(data, [
+        'image_url',
+        'disease_image_url',
+        'example_image_url',
+        'example_image',
+        'example_image_path',
+        'img_url',
+        'image',
+      ]);
+      if (imgFromReadOne.isEmpty) {
+        final more = await _fallbackReadAllAndFind(token);
+        if (more != null) {
+          data = {...data, ...more};
+        }
+      }
+
       final nTh = _pick(data, ['disease_th', 'disease_name_th', 'name_th', 'disease_name', 'name']);
       final nEn = _pick(data, ['disease_en', 'disease_name_en', 'name_en']);
 
       final desc = _pick(data, ['description', 'disease_desc', 'desc', 'detail']);
       final ca = _pick(data, ['cause', 'reason', 'causes']);
       final sym = _pick(data, ['symptoms', 'symptom', 'signs']);
+
+      // รองรับหลายชื่อคอลัมน์ที่อาจใช้เก็บรูป
+      final imgRaw = _pick(data, [
+        'image_url',
+        'disease_image_url',
+        'example_image_url',
+        'example_image',
+        'example_image_path',
+        'img_url',
+        'image',
+      ]);
+      final imgUrl = _resolvePublicUrl(imgRaw);
 
       if (!mounted) return;
       setState(() {
@@ -160,6 +217,7 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
         description = desc;
         cause = ca;
         symptoms = sym;
+        if (imgUrl.isNotEmpty) _diseaseImageUrl = imgUrl;
         loading = false;
       });
     } catch (e) {
@@ -204,7 +262,6 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
     Future.microtask(_saveScanImageToDiagnosisHistory);
   }
 
-  // ✅ แก้ความสูงและการตัดขอบรูป
   Widget _imageBox({required Widget child}) {
     return Container(
       height: 200,
@@ -224,7 +281,6 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
     return pct.clamp(0, 100).toDouble();
   }
 
-  // ✅ ปรับสีและฟอนต์ส่วนผลการสแกนให้เหมือน Quick Result
   Widget _confidenceCard() {
     final hasScan = widget.scanConfidence != null;
     if (!hasScan) return const SizedBox.shrink();
@@ -236,7 +292,7 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
       margin: const EdgeInsets.only(top: 12, bottom: 14),
       decoration: BoxDecoration(
-        color: const Color(0xFFEAF3EE), // สีพื้นหลังเขียวอ่อน
+        color: const Color(0xFFEAF3EE),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: const Color(0xFFB9D6C3)),
       ),
@@ -285,7 +341,6 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
     );
   }
 
-  // ✅ ปรับ ExpansionTile ให้มีสไตล์เหมือน Quick Result
   Widget _sectionCard({
     required String title,
     required String value,
@@ -370,6 +425,10 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
         ? name.trim()
         : (widget.diseaseNameTh ?? widget.diseaseNameEn ?? '-');
 
+    final leftUrl = (widget.compareImageUrl != null && widget.compareImageUrl!.trim().isNotEmpty)
+        ? widget.compareImageUrl!.trim()
+        : _diseaseImageUrl.trim();
+
     return Scaffold(
       backgroundColor: kPageBg,
       appBar: AppBar(
@@ -403,10 +462,10 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
                       children: [
                         Expanded(
                           child: _imageBox(
-                            child: (widget.compareImageUrl == null || widget.compareImageUrl!.isEmpty)
+                            child: (leftUrl.isEmpty)
                                 ? const Icon(Icons.image_outlined, size: 50, color: Colors.black26)
                                 : Image.network(
-                                    widget.compareImageUrl!,
+                                    leftUrl,
                                     fit: BoxFit.cover,
                                     width: double.infinity,
                                     height: double.infinity,
@@ -445,7 +504,6 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
                         child: Text(error, style: const TextStyle(color: Colors.red, fontWeight: FontWeight.w700)),
                       ),
 
-                    // ✅ ปรับขนาดฟอนต์ชื่อโรคเป็น 18 เหมือน Quick Result
                     Text(
                       'ชื่อโรค : $dn',
                       style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
@@ -490,9 +548,9 @@ class _DiseaseDiagnosisPageState extends State<DiseaseDiagnosisPage> {
                         child: const Text(
                           'ตอบคำถามเพื่อรับคำเเนะนำ',
                           style: TextStyle(
-                            fontSize: 16, 
-                            fontWeight: FontWeight.w800, 
-                            color: Colors.white
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                            color: Colors.white,
                           ),
                         ),
                       ),

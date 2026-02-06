@@ -64,6 +64,9 @@ class _TreatmentAdvicePageState extends State<TreatmentAdvicePage> {
   int? _recommendedChemicalId;
   int? _recommendedMoaGroupId;
 
+  // ✅ บางเวอร์ชันมีการเรียกใช้ชื่อนี้ (กัน error)
+  int? get _episodeMoaGroupId => _recommendedMoaGroupId;
+
   // ✅ เก็บชื่อสารเคมีที่แนะนำ (ใช้ทำ note/สร้างงานในปฏิทิน)
   String? _recommendedChemicalName;
 
@@ -491,6 +494,7 @@ class _TreatmentAdvicePageState extends State<TreatmentAdvicePage> {
         diagnosisHistoryId: dhId,
         treatmentId: widget.treatmentId,
         chemicalId: _recommendedChemicalId,
+        moaGroupId: _episodeMoaGroupId,
         chemicalName: chemName.isNotEmpty ? chemName : null,
       );
     }
@@ -503,6 +507,7 @@ class _TreatmentAdvicePageState extends State<TreatmentAdvicePage> {
     int? diagnosisHistoryId,
     int? treatmentId,
     int? chemicalId,
+    int? moaGroupId,
     String? chemicalName,
   }) async {
     try {
@@ -527,6 +532,7 @@ class _TreatmentAdvicePageState extends State<TreatmentAdvicePage> {
         if (diagnosisHistoryId != null) 'id': diagnosisHistoryId,
         if (treatmentId != null) 'treatment_id': treatmentId,
         if (chemicalId != null) 'chemical_id': chemicalId,
+        if (moaGroupId != null) 'moa_group_id': moaGroupId,
         if (chemicalName != null) 'chemical_name': chemicalName,
       };
 
